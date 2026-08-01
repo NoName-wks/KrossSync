@@ -1,0 +1,1090 @@
+
+--[[  LICENSE
+--------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2026 NoName-wks
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+--------------------------------------------------------------------------------
+]]
+
+--[[ README
+--------------------------------------------------------------------------------
+
+NoRemove version (do not use this module; use V.0.0.1 instead) [test module]
+V.0.0.0
+
+--------------------------------------------------------------------------------
+
+]]
+
+-----------configurable values---------
+
+local SAVE_DATA_TIME = 60 -- Minimum interval before Save also updates persistent data, in seconds
+local AUTO_GET_MEMORY_TIME = 15 -- Interval between automatic MemoryStore checks, in seconds
+local ERROR_RESET_TIME = 30 -- Delay before re-evaluating a critical error state, in seconds
+local CRITICAL_ERROR_COUNT = 5 -- Number of queued errors that marks a store as critical
+
+-----------------------------------dependencies
+---@module Signal
+local signal = require(game.ReplicatedStorage.scr.Library.Signal)
+
+-- Internal FIFO queue used to track recent store errors.
+---@module Queue
+local Queue = {} do
+	Queue.__index = Queue
+
+	type Queue<T> = typeof(setmetatable(
+		{} :: {
+			_first: number,
+			_last: number,
+			_queue: { T },
+			new:()->Queue<T>,
+			isEmpty:(self:Queue<T>)->(),
+			enqueue:(self:Queue<T>,value:T)->(),
+			dequeue:(self:Queue<T>)->T|nil,
+			peek:(self:Queue<T>)->T|nil,
+			getSize:(self:Queue<T>)->number,
+		},
+		Queue
+		))
+
+	local function isEmpty(self)
+		return self._first > self._last 
+	end
+
+	local function enqueue(self, value)
+		-- Compact unused slots at the front so indices do not grow indefinitely.
+		if self._first > 50 and self._first > (self._last - self._first) then
+			local newQueue = {}
+			local newIndex = 0
+
+			for i = self._first, self._last do
+				newQueue[newIndex] = self._queue[i]
+				newIndex += 1
+			end
+
+			self._queue = newQueue
+			self._last = newIndex - 1
+			self._first = 0
+		end
+
+		self._last += 1
+		self._queue[self._last] = value
+	end
+
+	local function dequeue(self)
+		if self:isEmpty() then
+			warn("EmptyQueue")
+			return nil
+		end
+
+		local first = self._first
+		local value = self._queue[first]
+		self._queue[first] = nil
+		self._first = first + 1
+
+		if self:isEmpty() then
+			self._first = 0
+			self._last = -1
+		end
+
+		return value
+	end
+
+	local function peek(self)
+		if self:isEmpty() then
+			warn("EmptyQueue")
+			return nil
+		end
+
+		return self._queue[self._first]
+	end
+
+	local function getSize(self)
+		return self._last - self._first + 1
+	end
+
+	function Queue.new<T>():Queue<T>
+		local self = setmetatable({
+			_first = 0,
+			_last = -1,
+			_queue = {},
+			isEmpty = isEmpty,
+			enqueue = enqueue,
+			peek = peek,
+			getSize = getSize,
+			dequeue = dequeue,
+		}, Queue)::Queue<T>
+
+		return self
+	end
+end
+
+
+------------------------------------
+
+type StateType = "NotReady" | "NoInternet" | "NoAccess" | "Access" | "Error"
+type State = {Total: StateType, Data: StateType, Memory: StateType}
+
+-- Wrapper combining persistent DataStore data with temporary MemoryStore state.
+export type Data<MemTpl,DataTpl> = {
+	lastUpdate: number, -- Timestamp used as the previous synchronization baseline
+	dataCreateTime: number, -- Timestamp when this wrapper was created
+	memory: MemTpl,
+	data: DataTpl,
+	onlineServers: {[number]:string}, -- JobIds of servers currently using this key
+}
+-- Public shape of the per-store synchronization object returned by KrossSyncService.get.
+export type KrossSync<MemTpl,DataTpl> = {
+	MaxRetryTime:number|nil,
+	Store: DataStore,
+	Map: MemoryStoreHashMap,
+	MapName: string,
+	DataTemplate: DataTpl,
+	MemoryTemplate: MemTpl,
+	ExpirationTime:number,
+	LastData: {[string]:Data<MemTpl, DataTpl>},
+	--
+	IsGetting: {[string]:boolean}, 
+	IsSaving: {[string]:boolean}, 
+	----.signal----
+	OnNewData: signal.Signal<Data<MemTpl, DataTpl> >,
+	OnGettingToggle: signal.Signal<boolean> ,
+	OnSavingToggle: signal.Signal<boolean>,
+	----:func----
+	Get: (self:KrossSync<MemTpl, DataTpl>, key:string, force:boolean)-> (Data<MemTpl?, DataTpl> | false, {Data:boolean,Memory:boolean}?),
+	GetData: (self:KrossSync<MemTpl, DataTpl>, key:string, force:boolean) -> (Data<nil, DataTpl> | nil | false ),
+	GetMemory: (self:KrossSync<MemTpl, DataTpl>, key:string, force:boolean) -> (Data<MemTpl, DataTpl> | nil | false ),
+	--
+	Save: (self:KrossSync<MemTpl, DataTpl>, key:string, data:Data<MemTpl, DataTpl>|(old:Data<MemTpl, DataTpl>?)->(Data<MemTpl, DataTpl>?), expiration:number, force:boolean) -> (boolean),
+	SaveData: (self:KrossSync<MemTpl, DataTpl>, key:string, data:Data<MemTpl, DataTpl>|(old:DataTpl?)->(DataTpl?), force:boolean) -> (boolean),
+	SaveMemory: (self:KrossSync<MemTpl, DataTpl>, key:string, data:Data<MemTpl, DataTpl>|(old:Data<MemTpl, DataTpl>?)->(Data<MemTpl ,DataTpl>?), expiration:number, force:boolean) -> (boolean),
+	---
+	UnSync: (self:KrossSync<MemTpl, DataTpl>, key:string) -> boolean,
+}
+
+local rawError = error
+local rawWarn = warn
+local rawPrint = print
+
+local function error(str, lvl)
+	rawError(`||{script.Name}|| {tostring(str)}`, lvl)
+end
+
+local function warn(...)
+	rawWarn(`||{script.Name}||`, ...)
+end
+
+local function print(...)
+	rawPrint(`||{script.Name}||`, ...)
+end
+
+local State:State = {Total= "NotReady", Data= "NotReady",Memory= "NotReady"}
+local IsCritical = {Data = false,Memory = false,Total = false}
+
+-- Critical state change: (overall critical flag, per-store critical state)
+local OnCriticalToggle = signal()::signal.Signal<boolean,typeof(IsCritical)>
+-- Save error: (location[1=DataStore, 2=MemoryStore], error, store name, key, input/function)
+local OnError  = signal()::signal.Signal<number,string,string,string,any>
+-- Internal signal that attaches background work to each new synchronization object.
+local OnNewKrossSync = signal()::signal.Signal<KrossSync<any,any>>
+
+local RunService = game:GetService("RunService")
+local DataStoreService = game:GetService("DataStoreService")
+local MemoryStoreService = game:GetService("MemoryStoreService")
+
+
+local dataErrorQueue = Queue.new()
+local memoryErrorQueue = Queue.new()
+
+--[[
+Retries action with exponential backoff and jitter.
+`jitterPercent` ranges from 0 to 100 and defaults to 50.
+`action` is wrapped in pcall internally, so callers do not need to wrap it.
+Errors raised by `errorAction` are not protected.
+
+]]
+local function ExponentialJitterBackoff(
+	cap: number,
+	maxRetries: number?, 
+	jitterPercent: number?, 
+	action: () -> ...any, 
+	errorAction: ((attempt: number, result: any, cap: number) -> ())?
+) : (boolean, ...any|"action is nil")
+
+
+	local maxAttempts = (maxRetries and maxRetries >= 2) and maxRetries or math.huge -- Retry indefinitely when nil or below 2
+	local jitter = (jitterPercent or 50) / 100 -- Normalize the percentage to the 0-1 range
+
+	if not action then
+		warn("[ExponentialJitterBackoff] action is nil")
+		return false, "action is nil"
+	end
+
+	local attempt = 0
+	local success: boolean
+	local results: {any}
+
+	while attempt < maxAttempts do
+
+		results = table.pack(pcall(action)) -- Preserve all return values from the protected call
+		success = results[1] 
+
+		if success then 
+			return true, table.unpack(results,2,results.n) 
+		else
+			attempt += 1
+			local errorMessage = results[2]
+
+			if errorAction then
+				errorAction(attempt, errorMessage, cap)
+			end
+
+			if attempt >= maxAttempts then
+				return false, errorMessage
+			end
+
+			local baseWait = math.pow(2,attempt) -- Exponential delay before jitter is applied
+
+			local waitTime = baseWait + (math.random() * baseWait * jitter)
+			waitTime = math.min(waitTime, cap or math.huge)
+			task.wait(waitTime)
+		end
+	end
+
+	return false, results[2]
+end
+
+
+-- Deep-copy templates so nested tables are never shared with live data.
+local function DeepCopyTable(t)
+	local copy = {}
+	for key, value in pairs(t) do
+		if type(value) == "table" then
+			copy[key] = DeepCopyTable(value)
+		else
+			copy[key] = value
+		end
+	end
+	return copy
+end
+
+-- Recursive comparison used to detect MemoryStore changes.
+local function deepEqual(t1, t2)
+	if t1 == t2 then return true end
+	if type(t1) ~= "table" or type(t2) ~= "table" then return false end
+	for k, v in pairs(t1) do
+		if not deepEqual(v, t2[k]) then return false end
+	end
+	for k, v in pairs(t2) do
+		if t1[k] == nil then return false end
+	end
+	return true
+end
+
+-- Preserve existing values and fill only missing string keys from the template.
+-- Numeric array indices are treated as user data and are not reconciled.
+local function ReconcileTable(target, template)
+	for k, v in pairs(template) do
+		if type(k) == "string" then
+			if target[k] == nil then
+				if type(v) == "table" then
+					target[k] = DeepCopyTable(v)
+				else
+					target[k] = v
+				end
+			elseif type(target[k]) == "table" and type(v) == "table" then
+				ReconcileTable(target[k], v)
+			end
+		end
+	end
+end
+
+local function ReconcileValueWithTemplate(value, template)
+	if type(value) == "table" and type(template) == "table" then
+		ReconcileTable(value, template)
+	end
+	return value
+end
+
+-- Reconcile persistent and memory values inside a wrapper against their templates.
+local function ReconcileDataWithTemplates(data, dataTemplate, memoryTemplate)
+	if type(data) ~= "table" then
+		return data
+	end
+
+	ReconcileValueWithTemplate(data.data, dataTemplate)
+	ReconcileValueWithTemplate(data.memory, memoryTemplate)
+	return data
+end
+
+-- Check store availability. High performs an actual write request.
+local function IsStoreOkay(Type:nil|"Data"|"Memory",lvl:nil|"High" ):{Data:boolean|nil, Memory:boolean|nil}
+
+	local function ChackDataStore(lvl)
+		if lvl == "High" then
+			local success = ExponentialJitterBackoff(2,2,nil,function()
+				DataStoreService:GetGlobalDataStore():SetAsync("KrossSync_Chack",{Time=os.time(),JobID=game.JobId})
+			end,nil)
+			return success
+
+		else
+			local success = pcall(function()
+				DataStoreService:GetGlobalDataStore()
+			end)
+			return success
+
+		end
+
+	end
+
+	local function ChackMemoryStore(lvl)
+		if lvl == "High" then
+			local success = ExponentialJitterBackoff(2, 2, nil, function()
+				MemoryStoreService:GetHashMap("_tm"):SetAsync("KrossSync_Chack",{Time = os.time(),JobID=game.JobId},10)
+			end)
+			return success
+
+		else
+			local success = pcall(function()
+				MemoryStoreService:GetHashMap("_tm")
+			end)
+			return success
+		end
+
+	end
+
+	if Type == "Data"then
+		return {Data=ChackDataStore(lvl)}
+	elseif Type == "Memory" then
+		return {Memory=ChackMemoryStore(lvl)}
+	else
+		return {Data=ChackDataStore(lvl),Memory=ChackMemoryStore(lvl)}
+	end
+end
+
+-- Assemble DataStore and MemoryStore values into the common KrossSync wrapper.
+local function BuildData<memory,data>(lastUpdate,Data:data,Memory:memory,OnlineServers:{[number]:string}):Data<data,memory>
+	return {lastUpdate=lastUpdate,
+		dataCreateTime=os.time(),
+		memory=Memory,
+		data=Data,
+		onlineServers=OnlineServers,
+	}
+end
+
+-------------------------------------------------------------------PUBLIC OBJECT-------------------------------------
+
+
+local KrossSync = {} ::KrossSync<unknown,unknown>
+	KrossSync.__index = KrossSync
+
+
+
+-- Update per-key read state and fire only when the state actually changes.
+function KrossSync:SetGetting(key,value)
+	if self.IsGetting[key] ~= value then
+		self.IsGetting[key] = value
+		self.OnGettingToggle:Fire(value)
+	end
+end
+
+-- Update per-key write state and fire only when the state actually changes.
+function KrossSync:SetSaving(key,value)
+	if self.IsSaving[key] ~= value then
+		self.IsSaving[key] = value
+		self.OnSavingToggle:Fire(value)
+	end
+end
+
+
+-- Read MemoryStore first, then recover from DataStore or create template data when missing.
+-- Returns the wrapper on success; lower-level nil/false semantics are preserved for missing or blocked requests.
+function KrossSync:Get(key,force)	
+	if force ~= true and (self.IsGetting[key] or self.IsSaving[key] or IsCritical.Total or State.Total ~= "Access") then
+		return false
+	end
+
+	local memory = self:GetMemory(key,force)
+
+	if (memory ~= false) and (memory ~= nil) then -- Return immediately when MemoryStore contains the key
+		return memory
+
+	elseif memory == nil then -- Recover from DataStore because MemoryStore has no entry
+		local data2 = self:GetData(key,force)
+
+		if (data2 ~= false) and (data2 ~= nil) then -- Recreate the memory wrapper from persistent data
+			local m = self:SaveMemory(key, BuildData(os.time(), DeepCopyTable(data2.data), DeepCopyTable(self.MemoryTemplate), {game.JobId}, false, false), self.ExpirationTime, force)
+			return data2, {Data = true,Memory=((m~=false) and (m~=nil)) }
+
+		elseif data2 == nil then -- Create a new key from both templates
+
+			if force ~= true then -- Verify actual DataStore write access before creating a new key
+				local StoreStatus = IsStoreOkay("Data","High")
+				if StoreStatus.Data == false then
+					return false
+				end
+			end
+				--print("Data is nil, make data | key:",key) 
+
+			local Time = os.time()
+			local d = self:SaveData(key, BuildData(Time, DeepCopyTable(self.DataTemplate), nil, {game.JobId}, false, false), force)
+			local m = self:SaveMemory(key, BuildData(Time, DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId}, false, false), self.ExpirationTime, force)
+
+			if d and m then -- Both stores were created
+				return BuildData(Time, DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId}, false, false)
+
+			elseif d then	-- Only DataStore succeeded
+				return BuildData(Time, DeepCopyTable(self.DataTemplate), nil, {game.JobId}, false, false), {Data=true, Memory=false}
+					
+			elseif m then	-- Only MemoryStore succeeded
+				return BuildData(Time, nil, DeepCopyTable(self.MemoryTemplate), {game.JobId}, false, false), {Data=false, Memory=true}
+			else -- Both stores failed
+				return false, {Data=false, Memory=false}
+			end	
+
+		end
+	end
+
+	return false
+end
+	
+	
+-- Read persistent data only. nil means the key is absent; false means the request failed or was blocked.
+function KrossSync:GetData(key,force)
+	if force ~= true and (self.IsGetting[key] or self.IsSaving[key]or IsCritical.Data or State.Data ~= "Access") then
+		return false
+	end
+
+	self:SetGetting(key,true)
+
+	local function action()
+
+		return self.Store:GetAsync(key)
+	end
+
+	local function errorAction(attempt,result,cap)
+
+		warn("GetData failed:", key, result)
+	end
+
+	local success, result = ExponentialJitterBackoff(
+		40,
+		self.MaxRetryTime,
+		nil,
+		action,
+		errorAction
+	)
+
+	self:SetGetting(key,false)
+
+	if not success then
+
+		warn("GetData failed:", key, result)
+		return false
+	end
+		
+	if result == nil then
+		return nil
+	end
+
+	-- Add fields introduced by newer template versions to old saved data.
+	result = ReconcileValueWithTemplate(result, self.DataTemplate)
+
+	if self.LastData[key] then
+		local data = BuildData(self.LastData[key].dataCreateTime, result, self.LastData[key].memory, self.LastData[key].onlineServers)
+		self.LastData[key] = data
+		return data
+	else
+		local memory = DeepCopyTable(self.MemoryTemplate)
+		memory = ReconcileValueWithTemplate(memory, self.MemoryTemplate)
+		local m = self:SaveMemory(key, BuildData(os.time(), result, memory, {game.JobId}, false, false), self.ExpirationTime, force)
+		local data
+		if m == false then
+			data = BuildData(os.time(), result, nil, {game.JobId}, false, false)
+		else
+			data = BuildData(os.time(), result, memory, {game.JobId}, false, false)
+		end
+		self.LastData[key] = data
+		return data
+	end
+end
+
+
+-- Read the full MemoryStore wrapper and register this server in onlineServers exactly once.
+-- nil means the key is absent; false means the request failed or was blocked.
+function KrossSync:GetMemory(key,force,retryTime) 
+	if force ~= true and (self.IsGetting[key] or self.IsSaving[key] or IsCritical.Memory or State.Memory ~= "Access") then
+		return false
+	end
+
+	self:SetGetting(key,true)
+
+	local function action()
+
+		return self.Map:GetAsync(key)
+	end
+
+	local function errorAction(attempt,result,cap)
+
+		warn("GetMemory failed:", key, result)
+	end
+
+	local success, result = ExponentialJitterBackoff(
+		30,
+		self.MaxRetryTime,
+		nil,
+		action,
+		errorAction
+	)
+
+	self:SetGetting(key,false)
+
+	if not success then
+
+		warn("GetMemory failed:", key, result)
+		return false
+	end
+
+	if result == nil then
+		return nil
+	end
+
+
+	local data = ReconcileDataWithTemplates(result, self.DataTemplate, self.MemoryTemplate)
+	data.onlineServers = data.onlineServers or {}
+
+	local found = false
+	for _, id in pairs(data.onlineServers) do
+		if id == game.JobId then
+			found = true
+		end
+	end
+	if not found then
+		table.insert(data.onlineServers, game.JobId)
+		self:SaveMemory(key, data, self.ExpirationTime, force)
+	end
+		
+	self.LastData[key] = data
+	return data
+
+end
+
+
+-- Normally update fast MemoryStore only; also persist to DataStore after SAVE_DATA_TIME has elapsed.
+function KrossSync:Save(key,data,expiration,force)
+	if force ~= true and (self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") or IsCritical.Total == true or State.Total ~= "Access") then
+		return false
+	end
+		
+	expiration = expiration or self.ExpirationTime
+		
+	if self.LastData[key] and self.LastData[key].dataCreateTime + SAVE_DATA_TIME <= os.time() then
+
+		local m = self:SaveMemory(key,data,expiration,force)
+		local d = self:SaveData(key,data,force)
+
+		return m and d
+	else
+
+		return self:SaveMemory(key,data,expiration,force)
+	end
+end
+
+
+-- Store only the data field in DataStore to reduce persistent storage usage.
+-- A function input receives old persistent data through UpdateAsync; returning nil cancels the write.
+function KrossSync:SaveData(key,data,force) self = self::KrossSync<{},{}>
+	if force ~= true and (self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") or IsCritical.Data == true or State.Data ~= "Access") then
+		return false
+	end
+
+	local oldLastData = self.LastData[key]
+	local savedData
+	local hasSavedData = false
+
+	self:SetSaving(key,true)
+
+	local function action()
+		if typeof(data)=="function" then
+			-- Function updates use UpdateAsync to reduce concurrent write conflicts.
+			return self.Store:UpdateAsync(key,function(oldData)
+				savedData = data(oldData)
+				hasSavedData = true
+				return savedData
+			end)
+
+		elseif typeof(data)=="table" then
+			savedData = data.data
+			hasSavedData = true
+			return self.Store:SetAsync(key,savedData)
+		end
+	end
+
+
+	local function errorAction(attempt,result,cap)
+		warn("SaveData failed:", key, tostring(data), result)
+	end
+
+	local success, result = ExponentialJitterBackoff(
+		30,
+		self.MaxRetryTime,
+		nil,
+		action,
+		errorAction
+	)
+
+	self:SetSaving(key,false)
+	
+	if not success then
+		OnError:Fire(1,result,self.Store.Name,key,data)
+		return false
+	elseif result == nil and typeof(data) == "function" then
+		return false
+	else
+		if hasSavedData then
+			local lastData = oldLastData or BuildData(os.time(), DeepCopyTable(self.DataTemplate), nil, {game.JobId}, false, false)
+			self.LastData[key] = BuildData(lastData.dataCreateTime, savedData, lastData.memory, lastData.onlineServers)
+		end
+			
+		return true
+	end
+end
+
+
+-- Store the complete wrapper, including memory, data, and onlineServers, in MemoryStore.
+-- A function input atomically receives the latest store value, falling back to local cache/templates.
+function KrossSync:SaveMemory(key,data,expiration,force)
+	if force ~= true and (self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") or IsCritical.Memory == true or State.Memory ~= "Access") then
+		return false
+	end
+		
+	expiration = expiration or self.ExpirationTime
+
+	local oldLastData = self.LastData[key]
+	local savedMemoryData
+	local hasSavedMemoryData = false
+
+	self:SetSaving(key,true)
+
+	local function action()
+		if typeof(data)=="function" then
+			return self.Map:UpdateAsync(key,function(oldData)
+				savedMemoryData = data(oldData or oldLastData  or BuildData(os.time(), DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId}))
+				hasSavedMemoryData = true
+				return savedMemoryData
+			end,expiration)
+
+		elseif typeof(data)=="table" then
+			savedMemoryData = data
+			hasSavedMemoryData = true
+			return self.Map:SetAsync(key,savedMemoryData,expiration)
+		end
+	end
+
+	local function errorAction(attempt,result,cap)
+		warn("SaveMemory failed:",key, tostring(data), result)
+	end
+
+	local success, result = ExponentialJitterBackoff(
+		30,
+		self.MaxRetryTime,
+		nil,
+		action,
+		errorAction
+	)
+
+	self:SetSaving(key,false)
+	
+	if not success then
+		OnError:Fire(2,result,self.Store.Name,key,data)
+		return false
+	elseif result == nil and typeof(data) == "function" then
+		return false
+	else
+		if hasSavedMemoryData then
+			self.LastData[key] = savedMemoryData
+		end
+
+		return true
+	end
+end
+	
+
+-- Remove this server's JobId. The final server persists the latest data to DataStore.
+function KrossSync:UnSync(key)
+	local LastData
+	local function data(old:Data<{},{}>)
+		for i,v in pairs(old.onlineServers or {}) do
+			if v == game.JobId then
+				table.remove(old.onlineServers, i)
+				LastData = old
+				break
+			end
+		end
+		return old
+	end
+	local success = self:SaveMemory(key,data,self.ExpirationTime,true)
+	if not success then
+		return false
+	else
+		if not LastData then
+			self.LastData[key] = nil
+			return false
+		end
+		if #(LastData.onlineServers or {})== 0 then
+			-- No server still owns this key, so persist the memory snapshot before releasing it.
+			success = self:SaveData(key,LastData,true)
+			self.LastData[key] = nil
+			return success
+		end
+
+		self.LastData[key] = nil
+
+		return true
+	end
+
+end
+
+
+---------------------------------------------------------
+---------------------------------------------------------
+
+export type KrossSyncService = {
+	get:<DataTemplate,MemoryTemplate>(StoreName:string,DataTemplate:DataTemplate,MemoryTemplate:MemoryTemplate,NormalExpirationTime:number?)->(KrossSync<DataTemplate,MemoryTemplate> | false),
+	KrossSyncs: {[string]:KrossSync<unknown,unknown> | nil},
+	State: State,
+	IsCritical: typeof(IsCritical),
+	OnCriticalToggle:signal.Signal<boolean,typeof(IsCritical)>,
+	OnError:signal.Signal<number,string,string,string,any>
+}
+
+local KrossSyncService:KrossSyncService = {}
+
+
+-----------------------public values------------------------
+
+KrossSyncService.KrossSyncs = {}
+-- Current overall/DataStore/MemoryStore access state
+KrossSyncService.State = State
+KrossSyncService.IsCritical = IsCritical
+
+----public signals----
+
+-- Fired when repeated failures change the critical state
+KrossSyncService.OnCriticalToggle = OnCriticalToggle
+-- Provides location and request details for each save failure
+KrossSyncService.OnError  = OnError
+
+-----------------------public functions---------------------
+
+-- Create and cache one KrossSync object per StoreName.
+-- A repeated request with different template table references returns false.
+function KrossSyncService.get(StoreName,DataTemplate,MemoryTemplate,NormalExpirationTime)
+	if KrossSyncService.KrossSyncs[StoreName] then
+		if KrossSyncService.KrossSyncs[StoreName].DataTemplate ~= DataTemplate or KrossSyncService.KrossSyncs[StoreName].MemoryTemplate ~= MemoryTemplate then
+			return false
+		end
+		
+		return KrossSyncService.KrossSyncs[StoreName]
+	end
+	
+	local self={
+		MaxRetryTime=nil,
+		Store = DataStoreService:GetDataStore(StoreName),
+		Map = MemoryStoreService:GetHashMap(StoreName),
+		MapName = StoreName,
+		DataTemplate = DataTemplate,
+		MemoryTemplate = MemoryTemplate,
+		ExpirationTime = NormalExpirationTime or 600,
+		LastData = {},
+		--
+		IsGetting = {},
+		IsSaving = {},
+		----.signal----
+		OnNewData = signal(), -- Passes the new wrapper when another server's memory change is detected
+		OnGettingToggle = signal(), -- Passes whether a read is in progress (boolean)
+		OnSavingToggle = signal(), -- Passes whether a write is in progress (boolean)
+		-- TODO: Add an OnOverwrite signal that reports the affected store and key
+	}
+
+	self = setmetatable(self,KrossSync)::KrossSync<typeof(DataTemplate),typeof(MemoryTemplate)>
+
+	OnNewKrossSync:Fire(self)
+	KrossSyncService.KrossSyncs[StoreName] = self
+
+	return self
+
+end
+
+-----------------------internal state management------------------- 
+-- Combine DataStore/MemoryStore critical flags and emit changes.
+local function setCritical(Data,Memory)
+	if Data == nil then
+		Data = IsCritical.Data
+	end
+	if Memory == nil then
+		Memory = IsCritical.Memory
+	end
+	
+	if Data == IsCritical.Data and Memory == IsCritical.Memory then
+		return
+	else
+		IsCritical.Data = Data
+		IsCritical.Memory = Memory
+		if Data == false and Memory == false then
+			IsCritical.Total = false
+		else
+			IsCritical.Total = true
+		end
+		OnCriticalToggle:Fire(IsCritical.Total,IsCritical)
+	end
+end
+
+-- Update individual store states and derive the overall state by priority.
+local function setState(Data, Memory)
+	if State.Total == "NoInternet" or Data == "NotReady" or Memory == "NotReady" then
+		return
+	elseif State.Total == "NoAccess" and (Data ~= "Access" and Memory ~= "Access") then
+		return
+	elseif State.Total == "Access" and (Data == "NotReady" or Memory == "NotReady") then
+		return
+	elseif State.Total == "Error" and (Data == "NoAccess" or Memory == "NoAccess")then
+		return
+	end
+	Data = Data or State.Data
+	Memory = Memory or State.Memory
+	
+	State.Data = Data
+	State.Memory = Memory 
+
+	if Data == "Access" and Memory == "Access" then
+		State.Total = "Access"
+	elseif Data == "NoInternet" or Memory == "NoInternet" then
+		State.Total = "NoInternet"
+	elseif Data == "NoAccess" or Memory == "NoAccess" then
+		State.Total = "NoAccess"
+	elseif Data == "Error" or Memory == "Error" then
+		State.Total = "Error"
+	end
+end
+
+OnNewKrossSync:Connect(function(KrossSync)
+	-- Release every active key during shutdown. UnSync performs the final save for last-owner keys.
+	game:BindToClose(function()
+		local CLOSE_DEADLINE = 25
+		local CloseTime = os.time()
+		for key,v in pairs(KrossSync.LastData) do
+			task.spawn(function()
+				KrossSync:UnSync(key)
+				while KrossSync.LastData[key] do task.wait(1)
+					KrossSync:UnSync(key)
+				end
+			end)
+		end
+		while task.wait() do
+			local keys = 0
+			for k,v in pairs(KrossSync.LastData) do
+				keys += 1
+			end
+			if keys == 0 then break end
+			
+			if os.time() - CloseTime >= CLOSE_DEADLINE then
+				warn("KrossSync: BindToClose took too long to close. ("..(os.time()-CloseTime).."s)")
+				break
+			end
+			
+		end
+	end)
+	
+------------------
+	
+	-- Schedule an initial MemoryStore check for keys already cached when this object is attached.
+	local tasks = {}::{[string]:thread}
+	for key, data in pairs(KrossSync.LastData) do
+		tasks[key] = task.spawn(function() 
+			task.wait(data.dataCreateTime+AUTO_GET_MEMORY_TIME - os.time())
+			if data.memory then
+				local m = KrossSync:GetMemory(key,false)
+				if m ~= false and m ~= nil then
+					data.lastUpdate = data.dataCreateTime
+					data.dataCreateTime = os.time()
+					if not deepEqual(data.memory,m.memory) then
+						data.memory = m.memory
+						KrossSync.OnNewData:Fire(m)
+					end
+				end
+			end
+		end)
+	end
+
+	local LastGetTime = {}
+	-- Poll MemoryStore for active keys to detect changes made by other servers.
+	local Getting = task.spawn(function()
+		while task.wait() do -- Wait for all initial checks to finish
+			local i = 0
+			for key,thread in pairs(tasks) do
+				i+=1 break
+			end
+			if i == 0 then break end
+		end
+
+		while true do
+
+	
+			for key, data in pairs(KrossSync.LastData) do
+				tasks[key]  = task.spawn(function() 
+					task.wait(math.max(0, (LastGetTime[key] or 0) +  AUTO_GET_MEMORY_TIME - os.time()))
+					task.wait(math.max(0, data.dataCreateTime + AUTO_GET_MEMORY_TIME - os.time()))
+					if data.memory then 
+						
+						local m = KrossSync:GetMemory(key,false)
+						if m ~= false and m ~= nil then
+							
+							data.lastUpdate = data.dataCreateTime
+							data.dataCreateTime = os.time()
+							
+							if not deepEqual(data.memory,m.memory) then
+								
+								data.memory = m.memory
+								KrossSync.OnNewData:Fire(m)
+							end
+						end
+					end
+					
+					LastGetTime[key] = os.time()
+					tasks[key] = nil
+				end)
+
+			end
+
+			while task.wait() do -- Wait for all checks in this cycle to finish
+				local i = 0
+				for key,thread in pairs(tasks) do
+					i+=1
+					break
+				end
+				if i == 0 then break end
+			end
+			
+			for key,v in pairs(LastGetTime) do
+				if os.time() - v >= AUTO_GET_MEMORY_TIME * 10 then
+					LastGetTime[key] = nil
+				end
+			end
+
+		end
+	end)
+	
+end)
+
+-- Temporarily mark a store critical when its recent error count reaches the threshold.
+OnError:Connect(function(pos, ErrorMessage, Name, Key, Data)
+	if pos == 1 then
+		dataErrorQueue:enqueue({ErrorMessage,Name,Key,Data})
+		if dataErrorQueue:getSize() >= CRITICAL_ERROR_COUNT then
+			if IsCritical.Data == true then
+				return
+			end
+			setCritical(true,nil)
+			setState("Error",nil)
+			task.wait(ERROR_RESET_TIME)
+			dataErrorQueue:dequeue()
+			if dataErrorQueue:getSize() < CRITICAL_ERROR_COUNT then
+				setCritical(false,nil)
+				setState("Access",nil)
+			end
+		end
+
+	elseif pos == 2 then
+		memoryErrorQueue:enqueue({ErrorMessage,Name,Key,Data})
+		if memoryErrorQueue:getSize() >= CRITICAL_ERROR_COUNT then
+			if IsCritical.Memory == true then
+				return
+			end
+			setCritical(nil,true)
+			setState(nil,"Error")
+			task.wait(ERROR_RESET_TIME)
+			memoryErrorQueue:dequeue()
+			if memoryErrorQueue:getSize() < CRITICAL_ERROR_COUNT then
+				setCritical(nil,false)
+				setState(nil,"Access")
+			end
+		end
+	end
+
+end)
+
+-- Check store access at startup and keep service state current.
+task.spawn(function() -- State monitor
+	if RunService:IsStudio() then
+		local success,result = pcall(function()
+			return game:GetService("DataStoreService"):GetGlobalDataStore():SetAsync("KrossSync_Chack",{Time=os.time(),JobID=game.JobId}) 
+		end)
+
+		if not success then
+			if string.find(result,"403") ~= nil then
+				setState("NoInternet","NoInternet")
+				error(result)
+				return
+			end
+		end
+
+	end
+	
+	while true do
+		if State.Total == "Access" then
+			task.wait(5)
+		elseif State.Total == "Error" then
+			task.wait(1)
+		elseif State.Total == "NotReady" then
+			local IsOkay = IsStoreOkay("",nil)
+			if IsOkay.Data == true then
+				setState("Access",nil)
+			end
+			if IsOkay.Memory == true then
+				setState(nil,"Access")
+			end
+		end
+		task.wait()
+	end	
+end)
+
+-- Enter NoAccess while the DataStore request budget is too low for new work.
+task.spawn(function() -- Access budget monitor
+	while true do task.wait(15)
+		if dataErrorQueue:getSize() > 0 then
+			local writeBudget = DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.StandardWrite)
+			local readBudget = DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.StandardRead)
+			if writeBudget <= 1 then
+				setState("NoAccess",nil)
+			elseif readBudget <= 1 then
+				setState("NoAccess",nil)
+			elseif State.Total == "NoAccess" then
+				setState("Access",nil)
+			end
+		end
+	end
+end)
+
+
+
+return KrossSyncService
