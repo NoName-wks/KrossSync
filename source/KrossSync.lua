@@ -46,7 +46,7 @@ local CRITICAL_ERROR_COUNT = 5 -- Number of queued errors that marks a store as 
 
 -----------------------------------dependencies
 ---@module Signal
-local signal = require(game.ReplicatedStorage.scr.Library.Signal)
+local signal = require(game.ReplicatedStorage.scr.Library.Signal) --Made by AlexanderLindholt  | https://github.com/AlexanderLindholt/SignalPlus
 
 -- Internal FIFO queue used to track recent store errors.
 ---@module Queue
