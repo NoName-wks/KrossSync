@@ -45,7 +45,7 @@ local CRITICAL_ERROR_COUNT = 5 -- 이 횟수 이상 오류가 쌓이면 해당 �
 
 -----------------------------------의존 모듈
 ---@module Signal
-local signal = require(game.ReplicatedStorage.scr.Library.Signal)
+local signal = require(game.ReplicatedStorage.scr.Library.Signal)--Made by AlexanderLindholt  (AlexanderLindholt의 의해 만들어짐) | https://github.com/AlexanderLindholt/SignalPlus
 
 -- 최근 저장소 오류를 순서대로 관리하는 내부 큐입니다.
 ---@module Queue
