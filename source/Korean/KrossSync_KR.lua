@@ -25,29 +25,39 @@ SOFTWARE.
 --------------------------------------------------------------------------------
 ]]
 
---[[ 안내
+--[[ README
 --------------------------------------------------------------------------------
-AI를 이용하여 주석을 작성해서 번역이 없어도 알아 볼 수 있는 단어도 번역되었습니다 (ex: README -> 안내)
 
-NoRemove 버전 (이 모듈 대신 V.0.0.1을 사용하세요.) [테스트 모듈]
-V.0.0.0
+KrossSync
+V.0.0.1
+
+DataStore에는 영구 보관할 data 필드만 저장하고,
+MemoryStore에는 임시 memory와 서버 목록을 포함한 전체 동기화 래퍼를 저장한다.
+여러 서버가 같은 키를 사용할 때 MemoryStore를 통해 최신 상태와 접속 서버를 공유한다.
 
 --------------------------------------------------------------------------------
 
 ]]
 
------------조정 가능한 설정값---------
+-----------사용 환경에 맞게 조절할 설정값---------
 
-local SAVE_DATA_TIME = 60 -- Save 호출 시 영구 데이터까지 갱신하는 최소 간격(초)
-local AUTO_GET_MEMORY_TIME = 15 -- MemoryStore를 자동 확인하는 간격(초)
-local ERROR_RESET_TIME = 30 -- 치명적 오류 상태를 다시 검사하기까지의 대기 시간(초)
-local CRITICAL_ERROR_COUNT = 5 -- 이 횟수 이상 오류가 쌓이면 해당 저장소를 치명적 상태로 전환
+-- Save 호출 시 마지막 DataStore 저장으로부터 이 시간이 지난 경우에만 영구 데이터를 저장한다.
+local SAVE_DATA_TIME = 60
+-- 다른 서버가 MemoryStore에 반영한 변경을 확인하는 주기다.
+local AUTO_GET_MEMORY_TIME = 15
+-- 저장소 오류가 더 발생하지 않았을 때 오류 기록과 Critical 상태를 초기화하기까지의 시간이다.
+local ERROR_RESET_TIME = 30
+local CRITICAL_ERROR_COUNT = 5
+-- 삭제 표식은 자동 조회 주기보다 충분히 오래 유지해 오래된 서버가 데이터를 되살리지 못하게 한다.
+local REMOVAL_TOMBSTONE_MIN_TIME = AUTO_GET_MEMORY_TIME * 4
+local REMOVAL_MARKER = "__krossSyncRemoved"
 
------------------------------------의존 모듈
----@module Signal
-local signal = require(game.ReplicatedStorage.scr.Library.Signal)--Made by AlexanderLindholt  (AlexanderLindholt의 의해 만들어짐) | https://github.com/AlexanderLindholt/SignalPlus
+-----------------------------------외부 모듈
+-- 값 변경 알림에 사용하는 Signal+ 모듈
+---@module signal 
+local signal = require(game.ReplicatedStorage.scr.Library.Signal) --Signal+ (v3) by Alexander Lindholt  (https://github.com/AlexanderLindholt/SignalPlus)
 
--- 최근 저장소 오류를 순서대로 관리하는 내부 큐입니다.
+-- 저장소 오류 발생 시각을 순서대로 관리하는 간단한 FIFO 큐
 ---@module Queue
 local Queue = {} do
 	Queue.__index = Queue
@@ -67,12 +77,13 @@ local Queue = {} do
 		Queue
 		))
 
+	-- 큐에 처리할 항목이 남아 있는지 확인한다.
 	local function isEmpty(self)
 		return self._first > self._last 
 	end
 
 	local function enqueue(self, value)
-		-- 앞쪽의 비어 있는 공간이 커지면 배열을 압축해 인덱스가 계속 증가하지 않게 합니다.
+		-- 앞쪽에 사용하지 않는 공간이 많이 쌓이면 배열을 압축한다.
 		if self._first > 50 and self._first > (self._last - self._first) then
 			local newQueue = {}
 			local newIndex = 0
@@ -92,6 +103,7 @@ local Queue = {} do
 	end
 
 	local function dequeue(self)
+		-- 가장 먼저 들어온 값을 제거하고 반환한다.
 		if self:isEmpty() then
 			warn("EmptyQueue")
 			return nil
@@ -111,6 +123,7 @@ local Queue = {} do
 	end
 
 	local function peek(self)
+		-- 값을 제거하지 않고 가장 오래된 항목을 확인한다.
 		if self:isEmpty() then
 			warn("EmptyQueue")
 			return nil
@@ -123,6 +136,7 @@ local Queue = {} do
 		return self._last - self._first + 1
 	end
 
+	-- 인덱스를 0과 -1로 시작해 빈 큐를 표현한다.
 	function Queue.new<T>():Queue<T>
 		local self = setmetatable({
 			_first = 0,
@@ -140,45 +154,58 @@ local Queue = {} do
 end
 
 
-------------------------------------
+------------------------------------공용 타입
 
+-- 저장소 접근 상태. Total은 DataStore와 MemoryStore 상태를 합친 값이다.
 type StateType = "NotReady" | "NoInternet" | "NoAccess" | "Access" | "Error"
 type State = {Total: StateType, Data: StateType, Memory: StateType}
 
--- DataStore의 영구 데이터와 MemoryStore의 임시 상태를 함께 표현하는 래퍼입니다.
+
+-- MemoryStore에서 서버 간 공유하는 데이터 래퍼
 export type Data<MemTpl,DataTpl> = {
-	lastUpdate: number, -- 직전 동기화 기준 시각
-	dataCreateTime: number, -- 현재 래퍼를 만든 시각
-	memory: MemTpl,
-	data: DataTpl,
-	onlineServers: {[number]:string}, -- 이 키를 사용 중인 서버의 JobId 목록
+	lastUpdate: number, -- 마지막 MemoryStore 동기화 시각
+	dataCreateTime: number, -- 마지막 DataStore 저장 시각
+	memory: MemTpl, -- MemoryStore에서만 유지하는 임시 데이터
+	data: DataTpl, -- DataStore에 영구 저장하는 데이터
+	onlineServers: {[number]:string}, -- 현재 이 키를 동기화 중인 서버 JobId 목록
 }
--- KrossSyncService.get이 반환하는 저장소별 동기화 객체의 공개 형식입니다.
-export type KrossSync<MemTpl,DataTpl> = {
+-- StoreName 하나에 대응하는 동기화 인스턴스와 공개 메서드 타입
+export type KrossSync<MemTpl,DataTpl> = {	
+	-- nil이면 성공할 때까지 재시도하고, 숫자면 해당 횟수만큼 시도한다.
 	MaxRetryTime:number|nil,
+	-- 실제 Roblox 저장소 객체와 생성에 사용한 설정
 	Store: DataStore,
 	Map: MemoryStoreHashMap,
 	MapName: string,
 	DataTemplate: DataTpl,
 	MemoryTemplate: MemTpl,
 	ExpirationTime:number,
+	-- 키별 최신 로컬 캐시와 삭제/후속 작업 상태
 	LastData: {[string]:Data<MemTpl, DataTpl>},
-	--
+	RemovedKeys: {[string]:number},
+	PendingDataSave: {[string]:boolean},
+	PendingRemovalCleanup: {[string]:boolean},
+	PendingRemovalVerification: {[string]:boolean},
+	-- 키별 중복 조회/저장을 막는 로컬 잠금
 	IsGetting: {[string]:boolean}, 
 	IsSaving: {[string]:boolean}, 
-	----.signal----
+	---- 인스턴스 신호----
 	OnNewData: signal.Signal<Data<MemTpl, DataTpl> >,
 	OnGettingToggle: signal.Signal<boolean> ,
 	OnSavingToggle: signal.Signal<boolean>,
-	----:func----
+	---- 조회 함수----
 	Get: (self:KrossSync<MemTpl, DataTpl>, key:string, force:boolean)-> (Data<MemTpl?, DataTpl> | false, {Data:boolean,Memory:boolean}?),
 	GetData: (self:KrossSync<MemTpl, DataTpl>, key:string, force:boolean) -> (Data<nil, DataTpl> | nil | false ),
 	GetMemory: (self:KrossSync<MemTpl, DataTpl>, key:string, force:boolean) -> (Data<MemTpl, DataTpl> | nil | false ),
-	--
+	---- 저장 함수----
 	Save: (self:KrossSync<MemTpl, DataTpl>, key:string, data:Data<MemTpl, DataTpl>|(old:Data<MemTpl, DataTpl>?)->(Data<MemTpl, DataTpl>?), expiration:number, force:boolean) -> (boolean),
 	SaveData: (self:KrossSync<MemTpl, DataTpl>, key:string, data:Data<MemTpl, DataTpl>|(old:DataTpl?)->(DataTpl?), force:boolean) -> (boolean),
 	SaveMemory: (self:KrossSync<MemTpl, DataTpl>, key:string, data:Data<MemTpl, DataTpl>|(old:Data<MemTpl, DataTpl>?)->(Data<MemTpl ,DataTpl>?), expiration:number, force:boolean) -> (boolean),
-	---
+	---- 삭제 함수: Remove 반환값 순서는 DataStore, MemoryStore 성공 여부다.----
+	Remove: (self:KrossSync<MemTpl, DataTpl>, key:string) -> (boolean, boolean),
+	RemoveData: (self:KrossSync<MemTpl, DataTpl>, key:string) -> boolean,
+	RemoveMemory: (self:KrossSync<MemTpl, DataTpl>, key:string) -> boolean,
+	---- 현재 서버 동기화 해제----
 	UnSync: (self:KrossSync<MemTpl, DataTpl>, key:string) -> boolean,
 }
 
@@ -186,6 +213,7 @@ local rawError = error
 local rawWarn = warn
 local rawPrint = print
 
+-- 모든 로그 앞에 모듈 이름을 붙여 다른 시스템 로그와 구분한다.
 local function error(str, lvl)
 	rawError(`||{script.Name}|| {tostring(str)}`, lvl)
 end
@@ -201,11 +229,11 @@ end
 local State:State = {Total= "NotReady", Data= "NotReady",Memory= "NotReady"}
 local IsCritical = {Data = false,Memory = false,Total = false}
 
--- 치명적 상태 변경: (전체 치명 여부, 저장소별 치명 상태)
+-- 반복 오류로 Critical 상태가 바뀔 때 발생한다. (전체 여부, 세부 상태)
 local OnCriticalToggle = signal()::signal.Signal<boolean,typeof(IsCritical)>
--- 저장 오류: (위치[1=DataStore, 2=MemoryStore], 오류, 저장소 이름, 키, 입력값/함수)
+-- 저장소 요청이 최종 실패할 때 발생한다. 위치는 1=DataStore, 2=MemoryStore다.
 local OnError  = signal()::signal.Signal<number,string,string,string,any>
--- 새 동기화 객체의 백그라운드 작업을 연결하기 위한 내부 신호입니다.
+-- 새 KrossSync 인스턴스의 종료 처리와 자동 동기화를 시작하는 내부 신호
 local OnNewKrossSync = signal()::signal.Signal<KrossSync<any,any>>
 
 local RunService = game:GetService("RunService")
@@ -213,15 +241,14 @@ local DataStoreService = game:GetService("DataStoreService")
 local MemoryStoreService = game:GetService("MemoryStoreService")
 
 
+-- 최근 오류만 보관해 짧은 시간에 반복되는 장애를 감지한다.
 local dataErrorQueue = Queue.new()
 local memoryErrorQueue = Queue.new()
 
 --[[
-지수 백오프와 지터를 적용해 action을 재시도합니다.
-`jitterPercent` 범위는 0~100이며 기본값은 50입니다.
-`action`은 내부에서 pcall로 감싸므로 호출자가 따로 pcall할 필요가 없습니다.
-`errorAction`에서 발생한 오류는 보호되지 않습니다.
-
+	지수 백오프와 무작위 지연을 적용해 저장소 요청을 재시도한다.
+	maxRetries가 nil이면 성공할 때까지 재시도하며, 숫자라면 최소 한 번은 실행한다.
+	action은 내부에서 pcall로 보호되지만 errorAction은 호출자가 오류가 나지 않게 작성해야 한다.
 ]]
 local function ExponentialJitterBackoff(
 	cap: number,
@@ -232,8 +259,11 @@ local function ExponentialJitterBackoff(
 ) : (boolean, ...any|"action is nil")
 
 
-	local maxAttempts = (maxRetries and maxRetries >= 2) and maxRetries or math.huge -- nil 또는 2 미만이면 제한 없이 재시도
-	local jitter = (jitterPercent or 50) / 100 -- 백분율을 0~1 범위로 정규화
+	local maxAttempts = math.huge
+	if maxRetries ~= nil and maxRetries == maxRetries then
+		maxAttempts = math.max(1,math.floor(maxRetries))
+	end
+	local jitter = (jitterPercent or 50) / 100 -- 백분율을 0~1 범위로 변환한다.
 
 	if not action then
 		warn("[ExponentialJitterBackoff] action is nil")
@@ -246,7 +276,8 @@ local function ExponentialJitterBackoff(
 
 	while attempt < maxAttempts do
 
-		results = table.pack(pcall(action)) -- 여러 반환값을 잃지 않도록 pack으로 보관
+		-- 반환값 개수를 보존하기 위해 pcall 결과를 table.pack으로 받는다.
+		results = table.pack(pcall(action))
 		success = results[1] 
 
 		if success then 
@@ -263,7 +294,8 @@ local function ExponentialJitterBackoff(
 				return false, errorMessage
 			end
 
-			local baseWait = math.pow(2,attempt) -- 지터를 적용하기 전의 지수 대기 시간
+			-- 2의 지수 형태로 대기 시간을 늘리고 동시에 몰리는 요청을 jitter로 분산한다.
+			local baseWait = math.pow(2,attempt)
 
 			local waitTime = baseWait + (math.random() * baseWait * jitter)
 			waitTime = math.min(waitTime, cap or math.huge)
@@ -275,7 +307,8 @@ local function ExponentialJitterBackoff(
 end
 
 
--- 템플릿과 실제 데이터가 같은 중첩 테이블을 공유하지 않도록 깊은 복사합니다.
+-- 템플릿과 캐시가 같은 중첩 테이블을 공유하지 않도록 재귀 복사한다.
+-- DataStore에 넣을 수 있는 순환 참조 없는 일반 테이블을 전제로 한다.
 local function DeepCopyTable(t)
 	local copy = {}
 	for key, value in pairs(t) do
@@ -288,7 +321,7 @@ local function DeepCopyTable(t)
 	return copy
 end
 
--- MemoryStore 변경 감지에 사용하는 재귀 비교입니다.
+-- 두 값 또는 중첩 테이블의 내용을 재귀적으로 비교한다.
 local function deepEqual(t1, t2)
 	if t1 == t2 then return true end
 	if type(t1) ~= "table" or type(t2) ~= "table" then return false end
@@ -301,8 +334,7 @@ local function deepEqual(t1, t2)
 	return true
 end
 
--- 기존 값은 유지하고 템플릿에 새로 추가된 문자열 키만 채웁니다.
--- 배열의 숫자 인덱스는 사용자 데이터로 간주하여 자동 추가하지 않습니다.
+-- 저장 데이터에 템플릿의 누락된 문자열 키만 채운다. 기존 값과 배열 항목은 보존한다.
 local function ReconcileTable(target, template)
 	for k, v in pairs(template) do
 		if type(k) == "string" then
@@ -319,6 +351,7 @@ local function ReconcileTable(target, template)
 	end
 end
 
+-- 값과 템플릿이 모두 테이블일 때만 구조를 보충한다.
 local function ReconcileValueWithTemplate(value, template)
 	if type(value) == "table" and type(template) == "table" then
 		ReconcileTable(value, template)
@@ -326,7 +359,7 @@ local function ReconcileValueWithTemplate(value, template)
 	return value
 end
 
--- 래퍼 안의 영구 데이터와 메모리 데이터를 각각의 템플릿에 맞춰 보정합니다.
+-- MemoryStore 래퍼의 영구 데이터와 임시 데이터를 각각의 템플릿으로 보충한다.
 local function ReconcileDataWithTemplates(data, dataTemplate, memoryTemplate)
 	if type(data) ~= "table" then
 		return data
@@ -337,11 +370,13 @@ local function ReconcileDataWithTemplates(data, dataTemplate, memoryTemplate)
 	return data
 end
 
--- 저장소 접근 가능 여부를 검사합니다. High는 실제 쓰기 요청까지 수행합니다.
+-- 저장소 객체 생성 또는 실제 쓰기를 통해 사용 가능 여부를 확인한다.
+-- High 검사는 실제 요청을 보내므로 필요한 경우에만 사용한다.
 local function IsStoreOkay(Type:nil|"Data"|"Memory",lvl:nil|"High" ):{Data:boolean|nil, Memory:boolean|nil}
 
 	local function ChackDataStore(lvl)
 		if lvl == "High" then
+			-- 실제 쓰기를 수행해 API 접근 권한과 네트워크 상태를 함께 확인한다.
 			local success = ExponentialJitterBackoff(2,2,nil,function()
 				DataStoreService:GetGlobalDataStore():SetAsync("KrossSync_Chack",{Time=os.time(),JobID=game.JobId})
 			end,nil)
@@ -359,6 +394,7 @@ local function IsStoreOkay(Type:nil|"Data"|"Memory",lvl:nil|"High" ):{Data:boole
 
 	local function ChackMemoryStore(lvl)
 		if lvl == "High" then
+			-- 짧은 만료 시간을 사용해 상태 확인용 값이 오래 남지 않게 한다.
 			local success = ExponentialJitterBackoff(2, 2, nil, function()
 				MemoryStoreService:GetHashMap("_tm"):SetAsync("KrossSync_Chack",{Time = os.time(),JobID=game.JobId},10)
 			end)
@@ -382,8 +418,8 @@ local function IsStoreOkay(Type:nil|"Data"|"Memory",lvl:nil|"High" ):{Data:boole
 	end
 end
 
--- 두 저장소의 값을 KrossSync 공통 래퍼 형태로 조립합니다.
-local function BuildData<memory,data>(lastUpdate,Data:data,Memory:memory,OnlineServers:{[number]:string}):Data<data,memory>
+-- DataStore 값과 MemoryStore 전용 값을 하나의 동기화 래퍼로 구성한다.
+local function BuildData<memory,data>(lastUpdate,Data:data,Memory:memory,OnlineServers:{[number]:string}):Data<memory,data>
 	return {lastUpdate=lastUpdate,
 		dataCreateTime=os.time(),
 		memory=Memory,
@@ -392,73 +428,323 @@ local function BuildData<memory,data>(lastUpdate,Data:data,Memory:memory,OnlineS
 	}
 end
 
--------------------------------------------------------------------공개 객체-------------------------------------
-
-
-local KrossSync = {} ::KrossSync<unknown,unknown>
-	KrossSync.__index = KrossSync
-
-
-
--- 키별 읽기 상태를 갱신하고 실제로 값이 바뀐 경우에만 신호를 보냅니다.
-function KrossSync:SetGetting(key,value)
-	if self.IsGetting[key] ~= value then
-		self.IsGetting[key] = value
-		self.OnGettingToggle:Fire(value)
+-- MemoryStore 값이 삭제 표식이면 만료 시각을 반환한다.
+-- 구버전 표식처럼 만료 시각이 없다면 안전하게 무기한 삭제로 취급한다.
+local function GetRemovalExpiration(value:any):number?
+	if type(value) ~= "table" or value[REMOVAL_MARKER] ~= true then
+		return nil
 	end
+
+	if type(value.removedUntil) == "number" then
+		return value.removedUntil
+	end
+
+	return math.huge
 end
 
--- 키별 쓰기 상태를 갱신하고 실제로 값이 바뀐 경우에만 신호를 보냅니다.
-function KrossSync:SetSaving(key,value)
-	if self.IsSaving[key] ~= value then
-		self.IsSaving[key] = value
-		self.OnSavingToggle:Fire(value)
+-- 아직 만료되지 않은 삭제 표식만 반환한다.
+local function GetActiveRemovalExpiration(value:any):number?
+	local removedUntil = GetRemovalExpiration(value)
+	if removedUntil and removedUntil > os.time() then
+		return removedUntil
 	end
+
+	return nil
 end
 
-
--- MemoryStore를 우선 조회하고, 없으면 DataStore에서 복구하거나 템플릿으로 새 데이터를 만듭니다.
--- 성공 시 래퍼를, 데이터가 없거나 요청할 수 없는 상태이면 false/nil을 하위 메서드 규칙에 따라 반환합니다.
-function KrossSync:Get(key,force)	
-	if force ~= true and (self.IsGetting[key] or self.IsSaving[key] or IsCritical.Total or State.Total ~= "Access") then
+-- 네트워크 조회 없이 로컬에 캐시된 삭제 상태를 확인한다.
+local function IsKeyLocallyRemoved(self:KrossSync<unknown,unknown>,key:string):boolean
+	local removedUntil = self.RemovedKeys[key]
+	if not removedUntil then
 		return false
 	end
 
+	if removedUntil <= os.time() then
+		self.RemovedKeys[key] = nil
+		return false
+	end
+
+	return true
+end
+
+-- 공유 tombstone을 로컬에 기록하고 기존 캐시를 즉시 폐기한다.
+local function MarkKeyRemoved(self:KrossSync<unknown,unknown>,key:string,removedUntil:number)
+	-- 더 늦게 만료되는 삭제 기록을 짧은 기록으로 덮어쓰지 않는다.
+	local effectiveUntil = math.max(self.RemovedKeys[key] or 0,removedUntil)
+	self.RemovedKeys[key] = effectiveUntil
+	self.LastData[key] = nil
+
+	-- 접근이 다시 오지 않는 키도 만료 후 로컬 테이블에서 제거한다.
+	if effectiveUntil < math.huge then
+		task.delay(math.max(0,effectiveUntil - os.time()),function()
+			if self.RemovedKeys[key] == effectiveUntil and effectiveUntil <= os.time() then
+				self.RemovedKeys[key] = nil
+			end
+		end)
+	end
+end
+
+-- 여러 서버가 확인할 수 있는 MemoryStore 삭제 표식을 만든다.
+local function BuildRemovalTombstone(expiration:number)
+	local removedAt = os.time()
+	return {
+		[REMOVAL_MARKER] = true,
+		removedAt = removedAt,
+		removedUntil = removedAt + expiration,
+	}
+end
+
+-- 잘못된 값과 중복 JobId를 제거해 서버 목록을 정규화한다.
+local function NormalizeOnlineServers(onlineServers:{[number]:string}?):{[number]:string}
+	local normalized = {}::{[number]:string}
+	local found = {}::{[string]:boolean}
+
+	for _,jobId in ipairs(onlineServers or {}) do
+		if type(jobId) == "string" and not found[jobId] then
+			found[jobId] = true
+			table.insert(normalized,jobId)
+		end
+	end
+
+	return normalized
+end
+
+-- 정규화된 서버 목록에 현재 서버를 한 번만 등록한다.
+local function RegisterCurrentServer(onlineServers:{[number]:string}?):{[number]:string}
+	local normalized = NormalizeOnlineServers(onlineServers)
+	if table.find(normalized,game.JobId) == nil then
+		table.insert(normalized,game.JobId)
+	end
+
+	return normalized
+end
+
+-- DataStore 접근 전후에 공유 tombstone을 읽어 삭제된 데이터의 부활을 막는다.
+-- 첫 번째 반환값은 조회 성공 여부이며 두 번째 값은 활성 tombstone 만료 시각이다.
+local function ReadSharedRemoval(self:KrossSync<unknown,unknown>,key:string):(boolean,number?)
+	local success, result = ExponentialJitterBackoff(
+		5,
+		2,
+		nil,
+		function()
+			return self.Map:GetAsync(key)
+		end,
+		function(attempt, errorMessage, cap)
+			warn("Removal check failed:",key,errorMessage)
+		end
+	)
+
+	if not success then
+		OnError:Fire(2,result,self.MapName,key)
+		return false,nil
+	end
+
+	local removedUntil = GetActiveRemovalExpiration(result)
+	if removedUntil then
+		MarkKeyRemoved(self,key,removedUntil)
+	end
+
+	return true,removedUntil
+end
+
+-- DataStore 키를 재시도 정책에 따라 삭제한다. retryLimit이 있으면 해당 호출에만 별도 제한을 적용한다.
+local function RemoveDataStoreKey(self:KrossSync<unknown,unknown>,key:string,retryLimit:number?):boolean
+	local success, result = ExponentialJitterBackoff(
+		30,
+		retryLimit or self.MaxRetryTime,
+		nil,
+		function()
+			return self.Store:RemoveAsync(key)
+		end,
+		function(attempt, errorMessage, cap)
+			warn("RemoveData failed:",key,errorMessage)
+		end
+	)
+
+	if not success then
+		OnError:Fire(1,result,self.Store.Name,key)
+	end
+
+	return success
+end
+
+-- 즉시 삭제가 실패한 키마다 백그라운드 정리 작업을 하나만 유지한다.
+local function ScheduleDataRemovalCleanup(self:KrossSync<unknown,unknown>,key:string,removedUntil:number?)
+	if self.PendingRemovalCleanup[key] then
+		return
+	end
+
+	-- DataStore 삭제가 일시적으로 실패해도 tombstone이 살아 있는 동안 계속 정리한다.
+	self.PendingRemovalCleanup[key] = true
+	task.spawn(function()
+		local fallbackDeadline = os.time() + math.max(self.ExpirationTime,REMOVAL_TOMBSTONE_MIN_TIME)
+		local deadline = removedUntil and removedUntil < math.huge and removedUntil or fallbackDeadline
+		while os.time() < deadline do
+			-- 한 번의 삭제 호출이 deadline을 넘기지 않도록 바깥 반복마다 한 번만 시도한다.
+			if RemoveDataStoreKey(self,key,1) then
+				self.PendingRemovalCleanup[key] = nil
+				return
+			end
+			task.wait(5)
+		end
+
+		self.PendingRemovalCleanup[key] = nil
+		warn("Removal cleanup expired before DataStore deletion succeeded:",key)
+	end)
+end
+
+-- 우선 즉시 삭제하고 실패하면 tombstone 유효 시간 안에서 비동기 재시도를 예약한다.
+local function EnsureDataStoreRemoved(self:KrossSync<unknown,unknown>,key:string,removedUntil:number?):boolean
+	local success = RemoveDataStoreKey(self,key)
+	if not success then
+		ScheduleDataRemovalCleanup(self,key,removedUntil)
+	end
+	return success
+end
+
+-- DataStore 쓰기 후 tombstone 확인만 실패했을 때 공유 삭제 상태를 다시 확인한다.
+local function ScheduleRemovalVerification(self:KrossSync<unknown,unknown>,key:string)
+	if self.PendingRemovalVerification[key] then
+		return
+	end
+
+	-- 저장은 완료됐지만 MemoryStore 확인만 실패한 경우 호출자에게 재저장을 요구하지 않고 별도로 확인한다.
+	self.PendingRemovalVerification[key] = true
+	task.spawn(function()
+		local deadline = os.time() + math.max(self.ExpirationTime,REMOVAL_TOMBSTONE_MIN_TIME)
+		local completed = false
+		while os.time() < deadline do
+			local verificationSucceeded, removedUntil = ReadSharedRemoval(self,key)
+			if verificationSucceeded then
+				if removedUntil then
+					EnsureDataStoreRemoved(self,key,removedUntil)
+				end
+				completed = true
+				break
+			end
+			task.wait(5)
+		end
+
+		self.PendingRemovalVerification[key] = nil
+		if not completed then
+			warn("Removal verification expired after a committed DataStore write:",key)
+		end
+	end)
+end
+
+-- MemoryStore 저장이 확정된 뒤 DataStore 저장만 실패한 키를 최신 로컬 값으로 다시 저장한다.
+-- 키마다 작업을 하나만 유지하며, 후속 MemoryStore 변경이 있으면 재시도 시 최신 LastData를 사용한다.
+local function ScheduleDataSave(self:KrossSync<unknown,unknown>,key:string)
+	if self.PendingDataSave[key] then
+		return
+	end
+
+	self.PendingDataSave[key] = true
+	task.spawn(function()
+		while self.PendingDataSave[key] do
+			if IsKeyLocallyRemoved(self,key) or self.LastData[key] == nil then
+				self.PendingDataSave[key] = nil
+				return
+			end
+
+			local latestData = DeepCopyTable(self.LastData[key])
+			if self:SaveData(key,latestData,true) then
+				self.PendingDataSave[key] = nil
+				return
+			end
+
+			task.wait(5)
+		end
+	end)
+end
+
+-------------------------------------------------------------------KrossSync 인스턴스 API-------------------------------------
+
+
+local KrossSync = {} ::KrossSync<unknown,unknown>
+KrossSync.__index = KrossSync
+
+
+
+-- 키의 조회 잠금 상태를 바꾸고 실제 상태가 변했을 때만 신호를 발생시킨다.
+function KrossSync:SetGetting(key,value)
+	local wasGetting = self.IsGetting[key] == true
+	local isGetting = value == true
+
+	-- 완료된 키는 false로 남겨 두지 않아 장시간 실행 서버의 키 누적을 막는다.
+	self.IsGetting[key] = if isGetting then true else nil
+	if wasGetting ~= isGetting then
+		self.OnGettingToggle:Fire(isGetting)
+	end
+end
+
+-- 키의 저장 잠금 상태를 바꾸고 완료된 잠금 항목은 테이블에서 제거한다.
+function KrossSync:SetSaving(key,value)
+	local wasSaving = self.IsSaving[key] == true
+	local isSaving = value == true
+
+	self.IsSaving[key] = if isSaving then true else nil
+	if wasSaving ~= isSaving then
+		self.OnSavingToggle:Fire(isSaving)
+	end
+end
+
+
+-- MemoryStore를 우선 조회하고, 없으면 DataStore에서 복구하거나 템플릿으로 새 데이터를 만든다.
+function KrossSync:Get(key,force)	
+	-- 같은 키에서 조회와 저장이 겹치지 않게 한다. force도 잠금은 우회하지 않는다.
+	if self.IsGetting[key] or self.IsSaving[key] then
+		return false
+	end
+	if force ~= true and (IsCritical.Total or State.Total ~= "Access") then
+		return false
+	end
+
+	-- 가장 최신 서버 간 상태가 있는 MemoryStore를 먼저 확인한다.
 	local memory = self:GetMemory(key,force)
 
-	if (memory ~= false) and (memory ~= nil) then -- MemoryStore에서 찾았으면 즉시 반환
+	if (memory ~= false) and (memory ~= nil) then
 		return memory
 
-	elseif memory == nil then -- MemoryStore에 키가 없으므로 DataStore에서 복구
+	elseif memory == nil then
+		-- MemoryStore에 값이 없으면 영구 데이터로 전체 래퍼를 복구한다.
 		local data2 = self:GetData(key,force)
 
-		if (data2 ~= false) and (data2 ~= nil) then -- 영구 데이터가 있으면 메모리 래퍼도 다시 생성
-			local m = self:SaveMemory(key, BuildData(os.time(), DeepCopyTable(data2.data), DeepCopyTable(self.MemoryTemplate), {game.JobId}, false, false), self.ExpirationTime, force)
-			return data2, {Data = true,Memory=((m~=false) and (m~=nil)) }
+		if (data2 ~= false) and (data2 ~= nil) then
+			-- GetData가 복구한 래퍼와 각 저장소 복구 여부를 반환한다.
+			return data2, {Data = true, Memory = data2.memory ~= nil}
 
-		elseif data2 == nil then -- 어느 저장소에도 없으면 템플릿으로 최초 생성
+		elseif data2 == nil then
+			-- 양쪽 저장소에 값이 전혀 없으면 템플릿으로 새 키를 생성한다.
 
-			if force ~= true then -- 새 키를 만들기 전 DataStore 실제 쓰기 가능 여부 확인
+			if force ~= true then
+				-- 새 영구 데이터를 만들기 전에 실제 DataStore 쓰기 가능 여부를 확인한다.
 				local StoreStatus = IsStoreOkay("Data","High")
 				if StoreStatus.Data == false then
 					return false
 				end
 			end
-				--print("Data is nil, make data | key:",key) 
-
 			local Time = os.time()
-			local d = self:SaveData(key, BuildData(Time, DeepCopyTable(self.DataTemplate), nil, {game.JobId}, false, false), force)
-			local m = self:SaveMemory(key, BuildData(Time, DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId}, false, false), self.ExpirationTime, force)
+			-- DataStore에는 memory 없이 data만, MemoryStore에는 전체 래퍼를 기록한다.
+			local d = self:SaveData(key, BuildData(Time, DeepCopyTable(self.DataTemplate), nil, {game.JobId}), force)
+			local m = self:SaveMemory(key, BuildData(Time, DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId}), self.ExpirationTime, force)
+			if IsKeyLocallyRemoved(self,key) then
+				if d then
+					EnsureDataStoreRemoved(self,key,self.RemovedKeys[key])
+				end
+				return false, {Data=false, Memory=false}
+			end
 
-			if d and m then -- 두 저장소 모두 생성 성공
-				return BuildData(Time, DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId}, false, false)
+			if d and m then
+				return BuildData(Time, DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId})
 
-			elseif d then	-- DataStore만 생성 성공
-				return BuildData(Time, DeepCopyTable(self.DataTemplate), nil, {game.JobId}, false, false), {Data=true, Memory=false}
-					
-			elseif m then	-- MemoryStore만 생성 성공
-				return BuildData(Time, nil, DeepCopyTable(self.MemoryTemplate), {game.JobId}, false, false), {Data=false, Memory=true}
-			else -- 두 저장소 모두 실패
+			elseif d then
+				-- 부분 성공도 호출자가 구분할 수 있도록 상태 테이블을 함께 반환한다.
+				return BuildData(Time, DeepCopyTable(self.DataTemplate), nil, {game.JobId}), {Data=true, Memory=false}
+
+			elseif m then
+				return BuildData(Time, nil, DeepCopyTable(self.MemoryTemplate), {game.JobId}), {Data=false, Memory=true}
+			else
 				return false, {Data=false, Memory=false}
 			end	
 
@@ -467,18 +753,22 @@ function KrossSync:Get(key,force)
 
 	return false
 end
-	
-	
--- DataStore에서 영구 데이터만 읽습니다. nil은 키 없음, false는 요청 실패/차단을 뜻합니다.
+
+
+-- DataStore에는 전체 래퍼가 아니라 data 필드만 저장되어 있다.
 function KrossSync:GetData(key,force)
-	if force ~= true and (self.IsGetting[key] or self.IsSaving[key]or IsCritical.Data or State.Data ~= "Access") then
+	-- 로컬 삭제 상태와 키별 잠금을 먼저 확인한다.
+	if IsKeyLocallyRemoved(self,key) or self.IsGetting[key] or self.IsSaving[key] then
+		return false
+	end
+	-- 삭제된 키의 부활을 막기 위해 DataStore 읽기에도 MemoryStore tombstone 확인이 필요하다.
+	if force ~= true and (IsCritical.Data or IsCritical.Memory or State.Data ~= "Access" or State.Memory ~= "Access") then
 		return false
 	end
 
 	self:SetGetting(key,true)
 
 	local function action()
-
 		return self.Store:GetAsync(key)
 	end
 
@@ -488,41 +778,63 @@ function KrossSync:GetData(key,force)
 	end
 
 	local success, result = ExponentialJitterBackoff(
-		40,
+		30,
 		self.MaxRetryTime,
 		nil,
 		action,
 		errorAction
 	)
 
-	self:SetGetting(key,false)
-
 	if not success then
-
+		self:SetGetting(key,false)
 		warn("GetData failed:", key, result)
+		OnError:Fire(1,result,self.Store.Name,key)
 		return false
 	end
-		
+
+	local removalCheckSucceeded, removedUntil = ReadSharedRemoval(self,key)
+	self:SetGetting(key,false)
+	if not removalCheckSucceeded or removedUntil then
+		return false
+	end
+
 	if result == nil then
+		-- nil은 오류가 아니라 아직 생성되지 않은 키를 뜻한다.
 		return nil
 	end
 
-	-- 오래된 저장 데이터에 템플릿의 새 필드를 추가합니다.
 	result = ReconcileValueWithTemplate(result, self.DataTemplate)
 
 	if self.LastData[key] then
+		-- 이미 임시 상태가 있으면 새 영구 데이터만 합쳐 MemoryStore와 캐시를 맞춘다.
 		local data = BuildData(self.LastData[key].dataCreateTime, result, self.LastData[key].memory, self.LastData[key].onlineServers)
-		self.LastData[key] = data
-		return data
+		if not deepEqual(data.data,self.LastData[key].data) then
+			local success = self:SaveMemory(key,function(old)
+				old.data = data.data
+				return old
+			end,nil,force)
+			if not success then
+				return false
+			end
+		else
+			self.LastData[key] = data
+		end
+		
+		
+		return self.LastData[key]
 	else
+		-- 로컬 캐시가 없으면 템플릿 memory와 현재 서버 목록으로 MemoryStore를 새로 만든다.
 		local memory = DeepCopyTable(self.MemoryTemplate)
 		memory = ReconcileValueWithTemplate(memory, self.MemoryTemplate)
-		local m = self:SaveMemory(key, BuildData(os.time(), result, memory, {game.JobId}, false, false), self.ExpirationTime, force)
+		local m = self:SaveMemory(key, BuildData(os.time(), result, memory, {game.JobId}), self.ExpirationTime, force)
 		local data
 		if m == false then
-			data = BuildData(os.time(), result, nil, {game.JobId}, false, false)
+			if IsKeyLocallyRemoved(self,key) then
+				return false
+			end
+			data = BuildData(os.time(), result, nil, {game.JobId})
 		else
-			data = BuildData(os.time(), result, memory, {game.JobId}, false, false)
+			data = BuildData(os.time(), result, memory, {game.JobId})
 		end
 		self.LastData[key] = data
 		return data
@@ -530,10 +842,13 @@ function KrossSync:GetData(key,force)
 end
 
 
--- MemoryStore의 전체 래퍼를 읽고 현재 서버를 onlineServers에 한 번만 등록합니다.
--- nil은 키 없음, false는 요청 실패/차단을 뜻합니다.
-function KrossSync:GetMemory(key,force,retryTime) 
-	if force ~= true and (self.IsGetting[key] or self.IsSaving[key] or IsCritical.Memory or State.Memory ~= "Access") then
+-- 서버 간 공유 래퍼를 읽고 현재 서버의 JobId가 빠졌다면 원자적으로 등록한다.
+function KrossSync:GetMemory(key,force) 
+	-- 조회 중인 키를 다른 작업이 동시에 덮어쓰지 않게 한다.
+	if self.IsGetting[key] or self.IsSaving[key] then
+		return false
+	end
+	if force ~= true and (IsCritical.Memory or State.Memory ~= "Access") then
 		return false
 	end
 
@@ -562,71 +877,127 @@ function KrossSync:GetMemory(key,force,retryTime)
 	if not success then
 
 		warn("GetMemory failed:", key, result)
+		OnError:Fire(2,result,self.MapName,key)
 		return false
 	end
 
 	if result == nil then
+		-- 로컬 삭제 기록이 없다면 MemoryStore 만료 또는 미생성 상태다.
+		if IsKeyLocallyRemoved(self,key) then
+			return false
+		end
 		return nil
 	end
 
+	-- 활성 tombstone은 캐시에 저장하지 않고 즉시 삭제 상태로 전환한다.
+	local removedUntil = GetActiveRemovalExpiration(result)
+	if removedUntil then
+		MarkKeyRemoved(self,key,removedUntil)
+		return false
+	elseif GetRemovalExpiration(result) then
+		self.RemovedKeys[key] = nil
+		return nil
+	elseif IsKeyLocallyRemoved(self,key) then
+		return false
+	end
 
+	-- 이전 버전 데이터에 새 템플릿 필드를 채우고 서버 목록을 정리한다.
 	local data = ReconcileDataWithTemplates(result, self.DataTemplate, self.MemoryTemplate)
-	data.onlineServers = data.onlineServers or {}
+	local normalizedServers = NormalizeOnlineServers(data.onlineServers)
+	local needsRegistration = table.find(normalizedServers,game.JobId) == nil
+	local needsNormalization = not deepEqual(normalizedServers,data.onlineServers)
 
-	local found = false
-	for _, id in pairs(data.onlineServers) do
-		if id == game.JobId then
-			found = true
+	if needsRegistration or needsNormalization then
+		-- UpdateAsync로 최신 값을 다시 받아 다른 서버의 동시 등록을 덮어쓰지 않는다.
+		local saved = self:SaveMemory(key,function(oldData)
+			local latestData = ReconcileDataWithTemplates(oldData or data, self.DataTemplate, self.MemoryTemplate)
+			latestData.onlineServers = RegisterCurrentServer(latestData.onlineServers)
+			return latestData
+		end,self.ExpirationTime,force)
+
+		if not saved then
+			return false
 		end
+
+		return self.LastData[key]
 	end
-	if not found then
-		table.insert(data.onlineServers, game.JobId)
-		self:SaveMemory(key, data, self.ExpirationTime, force)
-	end
-		
+
+	data.onlineServers = normalizedServers
 	self.LastData[key] = data
 	return data
 
 end
 
 
--- 평소에는 빠른 MemoryStore만 갱신하고, SAVE_DATA_TIME이 지나면 DataStore도 함께 저장합니다.
+-- 평소에는 MemoryStore를 갱신하고, 영구 저장 주기가 지난 경우 data 필드도 DataStore에 저장한다.
 function KrossSync:Save(key,data,expiration,force)
-	if force ~= true and (self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") or IsCritical.Total == true or State.Total ~= "Access") then
+	-- 함수형 갱신과 전체 래퍼 입력만 허용한다.
+	if self.IsGetting[key] or self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") then
 		return false
 	end
-		
+	if force ~= true and (IsCritical.Total == true or State.Total ~= "Access") then
+		return false
+	end
+
 	expiration = expiration or self.ExpirationTime
-		
+
 	if self.LastData[key] and self.LastData[key].dataCreateTime + SAVE_DATA_TIME <= os.time() then
 
+		-- 공유 메모리를 먼저 갱신한 후 확정된 data 필드를 영구 저장한다.
 		local m = self:SaveMemory(key,data,expiration,force)
-		local d = self:SaveData(key,data,force)
+		if not m then
+			return false
+		end
+		local d = self:SaveData(key,self.LastData[key],force)
+		if d then
+			-- 이전에 예약된 작업이 있더라도 최신 값이 저장됐으므로 취소한다.
+			self.PendingDataSave[key] = nil
+			return true
+		elseif IsKeyLocallyRemoved(self,key) then
+			return false
+		end
 
-		return m and d
+		-- MemoryStore에는 이미 함수 결과가 반영됐다. false를 반환해 호출자가 같은 함수를
+		-- 다시 실행하지 않도록 논리적 저장은 성공으로 처리하고 영구 저장만 백그라운드에서 재시도한다.
+		ScheduleDataSave(self,key)
+		return true
 	else
-
+		-- 영구 저장 주기 전에는 빠른 MemoryStore 갱신만 수행한다.
 		return self:SaveMemory(key,data,expiration,force)
 	end
 end
 
 
--- DataStore에는 래퍼가 아닌 data 필드만 저장하여 영구 저장 공간을 절약합니다.
--- 함수형 입력은 UpdateAsync의 기존 영구 데이터를 받고, nil을 반환하면 저장을 취소합니다.
-function KrossSync:SaveData(key,data,force) self = self::KrossSync<{},{}>
-	if force ~= true and (self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") or IsCritical.Data == true or State.Data ~= "Access") then
+-- table 입력은 래퍼의 data 필드만 저장한다. 함수 입력은 DataStore의 기존 data 값을 받는다.
+-- UpdateAsync 콜백은 충돌 시 여러 번 호출될 수 있으므로 외부 상태를 변경하지 않는 함수여야 한다.
+function KrossSync:SaveData(key,data,force) self = self::KrossSync<unknown,unknown>
+	if IsKeyLocallyRemoved(self,key) then
 		return false
 	end
 
+	if self.IsGetting[key] or self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") then
+		return false
+	end
+	-- 삭제된 키의 부활을 막기 위해 쓰기 직전과 직후에 MemoryStore tombstone을 확인한다.
+	if force ~= true and (IsCritical.Data or IsCritical.Memory or State.Data ~= "Access" or State.Memory ~= "Access") then
+		return false
+	end
+
+	-- 저장 성공 후 로컬 전체 래퍼를 복원하기 위해 이전 임시 상태를 보관한다.
 	local oldLastData = self.LastData[key]
 	local savedData
 	local hasSavedData = false
 
 	self:SetSaving(key,true)
+	local removalCheckSucceeded, removedUntil = ReadSharedRemoval(self,key)
+	if not removalCheckSucceeded or removedUntil then
+		self:SetSaving(key,false)
+		return false
+	end
 
 	local function action()
 		if typeof(data)=="function" then
-			-- 동시 쓰기 충돌을 줄이기 위해 함수형 갱신은 UpdateAsync를 사용합니다.
+			-- 함수에는 DataStore에 저장된 순수 data 값만 전달한다.
 			return self.Store:UpdateAsync(key,function(oldData)
 				savedData = data(oldData)
 				hasSavedData = true
@@ -634,6 +1005,7 @@ function KrossSync:SaveData(key,data,force) self = self::KrossSync<{},{}>
 			end)
 
 		elseif typeof(data)=="table" then
+			-- 전체 래퍼 중 영구 저장 대상인 data 필드만 분리한다.
 			savedData = data.data
 			hasSavedData = true
 			return self.Store:SetAsync(key,savedData)
@@ -653,8 +1025,22 @@ function KrossSync:SaveData(key,data,force) self = self::KrossSync<{},{}>
 		errorAction
 	)
 
+	if success then
+		-- 쓰기와 삭제가 교차했는지 다시 확인한다.
+		local verificationSucceeded, removedAfterSave = ReadSharedRemoval(self,key)
+		if not verificationSucceeded then
+			-- DataStore 쓰기는 이미 완료됐다. 함수형 저장의 중복 실행을 막기 위해
+			-- 성공을 유지하고 tombstone 확인만 백그라운드에서 다시 수행한다.
+			ScheduleRemovalVerification(self,key)
+		elseif removedAfterSave then
+			self:SetSaving(key,false)
+			EnsureDataStoreRemoved(self,key,removedAfterSave)
+			return false
+		end
+	end
+
 	self:SetSaving(key,false)
-	
+
 	if not success then
 		OnError:Fire(1,result,self.Store.Name,key,data)
 		return false
@@ -662,43 +1048,74 @@ function KrossSync:SaveData(key,data,force) self = self::KrossSync<{},{}>
 		return false
 	else
 		if hasSavedData then
-			local lastData = oldLastData or BuildData(os.time(), DeepCopyTable(self.DataTemplate), nil, {game.JobId}, false, false)
+			-- MemoryStore 전용 필드와 서버 목록은 유지하고 data만 저장 결과로 교체한다.
+			local lastData = oldLastData or BuildData(os.time(), DeepCopyTable(self.DataTemplate), nil, {game.JobId})
 			self.LastData[key] = BuildData(lastData.dataCreateTime, savedData, lastData.memory, lastData.onlineServers)
 		end
-			
+
 		return true
 	end
 end
 
 
--- MemoryStore에는 memory, data, onlineServers를 포함한 전체 래퍼를 저장합니다.
--- 함수형 입력은 최신 MemoryStore 값(없으면 로컬 캐시/템플릿)을 받아 원자적으로 갱신합니다.
+-- 전체 동기화 래퍼를 MemoryStore에 저장한다. 함수 콜백에는 최신 래퍼가 전달된다.
 function KrossSync:SaveMemory(key,data,expiration,force)
-	if force ~= true and (self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") or IsCritical.Memory == true or State.Memory ~= "Access") then
+	if IsKeyLocallyRemoved(self,key) then
 		return false
 	end
-		
+
+	if self.IsGetting[key] or self.IsSaving[key] or (typeof(data)~="function" and typeof(data)~="table") then
+		return false
+	end
+	if force ~= true and (IsCritical.Memory == true or State.Memory ~= "Access") then
+		return false
+	end
+
 	expiration = expiration or self.ExpirationTime
 
+	-- MemoryStore 항목이 만료됐을 때 사용할 로컬 대체값을 보관한다.
 	local oldLastData = self.LastData[key]
 	local savedMemoryData
 	local hasSavedMemoryData = false
+	local blockedByRemoval = false
+	local removedUntil
 
 	self:SetSaving(key,true)
 
 	local function action()
-		if typeof(data)=="function" then
-			return self.Map:UpdateAsync(key,function(oldData)
-				savedMemoryData = data(oldData or oldLastData  or BuildData(os.time(), DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId}))
-				hasSavedMemoryData = true
-				return savedMemoryData
-			end,expiration)
+		-- UpdateAsync 안에서 tombstone 확인과 데이터 갱신을 한 번에 처리한다.
+		return self.Map:UpdateAsync(key,function(oldData)
+			savedMemoryData = nil
+			hasSavedMemoryData = false
+			blockedByRemoval = false
+			removedUntil = GetActiveRemovalExpiration(oldData)
 
-		elseif typeof(data)=="table" then
-			savedMemoryData = data
+			if removedUntil then
+				-- 삭제 표식은 어떤 일반 저장으로도 덮어쓰지 않는다.
+				blockedByRemoval = true
+				return oldData
+			elseif GetRemovalExpiration(oldData) then
+				oldData = nil
+			end
+
+			if typeof(data)== "function" then
+				-- 항목이 사라졌다면 마지막 로컬 캐시 또는 템플릿 래퍼를 함수에 전달한다.
+				local fallbackData = oldLastData or BuildData(os.time(), DeepCopyTable(self.DataTemplate), DeepCopyTable(self.MemoryTemplate), {game.JobId})
+				savedMemoryData = data(oldData or fallbackData)
+			elseif typeof(data)== "table" then
+				-- 외부 테이블을 직접 보관하지 않도록 복사하고 최신 서버 목록을 병합한다.
+				savedMemoryData = DeepCopyTable(data)
+				local currentServers = oldData and oldData.onlineServers or savedMemoryData.onlineServers
+				savedMemoryData.onlineServers = RegisterCurrentServer(currentServers)
+			end
+
+			if savedMemoryData == nil then
+				return nil
+			end
+
 			hasSavedMemoryData = true
-			return self.Map:SetAsync(key,savedMemoryData,expiration)
-		end
+			return savedMemoryData
+		end,expiration)
 	end
 
 	local function errorAction(attempt,result,cap)
@@ -714,11 +1131,18 @@ function KrossSync:SaveMemory(key,data,expiration,force)
 	)
 
 	self:SetSaving(key,false)
-	
+
+	local resultRemovedUntil = GetActiveRemovalExpiration(result)
 	if not success then
-		OnError:Fire(2,result,self.Store.Name,key,data)
+		OnError:Fire(2,result,self.MapName,key,data)
 		return false
-	elseif result == nil and typeof(data) == "function" then
+	elseif blockedByRemoval then
+		MarkKeyRemoved(self,key,removedUntil or math.huge)
+		return false
+	elseif resultRemovedUntil then
+		MarkKeyRemoved(self,key,resultRemovedUntil)
+		return false
+	elseif result == nil then
 		return false
 	else
 		if hasSavedMemoryData then
@@ -728,33 +1152,170 @@ function KrossSync:SaveMemory(key,data,expiration,force)
 		return true
 	end
 end
-	
 
--- 현재 서버의 JobId를 제거합니다. 마지막 서버라면 최신 data를 DataStore에 최종 저장합니다.
+
+-- UpdateAsync로 다른 서버의 저장과 원자적으로 순서를 정하며 tombstone을 기록한다.
+local function SetRemovalTombstone(self:KrossSync<unknown,unknown>,key:string,expiration:number):boolean
+	local tombstone = BuildRemovalTombstone(expiration)
+	local success, result = ExponentialJitterBackoff(
+		30,
+		self.MaxRetryTime,
+		nil,
+		function()
+			return self.Map:UpdateAsync(key,function()
+				tombstone = BuildRemovalTombstone(expiration)
+				return tombstone
+			end,expiration)
+		end,
+		function(attempt, errorMessage, cap)
+			warn("RemoveMemory failed:",key,errorMessage)
+		end
+	)
+
+	if not success then
+		OnError:Fire(2,result,self.MapName,key)
+		return false
+	end
+
+	MarkKeyRemoved(self,key,GetRemovalExpiration(result) or tombstone.removedUntil)
+	return true
+end
+
+
+-- 단독 DataStore 삭제 API가 사용하는 내부 래퍼
+local function RemoveDataKey(self:KrossSync<unknown,unknown>, key:string):boolean
+	return RemoveDataStoreKey(self,key)
+end
+
+-- tombstone 없이 MemoryStore 항목 자체를 제거한다.
+local function RemoveMemoryKey(self:KrossSync<unknown,unknown>, key:string):boolean
+	local success, result = ExponentialJitterBackoff(
+		30,
+		self.MaxRetryTime,
+		nil,
+		function()
+			return self.Map:RemoveAsync(key)
+		end,
+		function(attempt, errorMessage, cap)
+			warn("RemoveMemory failed:", key, errorMessage)
+		end
+	)
+
+	if not success then
+		OnError:Fire(2,result,self.MapName,key)
+	end
+
+	return success
+end
+
+-- MemoryStore에 tombstone을 먼저 기록한 뒤 DataStore를 삭제해 다른 서버의 재저장을 차단한다.
+function KrossSync:Remove(key)
+	-- 삭제 중에는 같은 키의 다른 로컬 요청을 차단한다.
+	if self.IsGetting[key] or self.IsSaving[key] then
+		return false, false
+	end
+
+	self:SetSaving(key,true)
+
+	-- 자동 조회 작업이 남아 있어도 삭제를 확인할 수 있도록 최소 유지 시간을 보장한다.
+	local tombstoneExpiration = math.max(self.ExpirationTime,REMOVAL_TOMBSTONE_MIN_TIME)
+	local memoryRemoved = SetRemovalTombstone(self,key,tombstoneExpiration)
+	local dataRemoved = false
+	if memoryRemoved then
+		-- 공유 삭제 표식 기록에 성공한 경우에만 영구 데이터를 삭제한다.
+		dataRemoved = EnsureDataStoreRemoved(self,key,self.RemovedKeys[key])
+	end
+
+	self:SetSaving(key,false)
+	self.IsGetting[key] = nil
+	self.IsSaving[key] = nil
+
+	return dataRemoved, memoryRemoved
+end
+
+
+-- DataStore만 즉시 삭제하는 저수준 함수다.
+-- 다른 서버가 아직 동기화 중이면 마지막 UnSync에서 다시 저장될 수 있으므로 영구 삭제에는 Remove를 사용한다.
+function KrossSync:RemoveData(key) local self = self :: KrossSync<unknown,unknown>
+	if self.IsGetting[key] or self.IsSaving[key] then
+		return false
+	end
+
+	self:SetSaving(key,true)
+	local success = RemoveDataKey(self,key)
+
+	if success then
+		-- 삭제한 영구 데이터가 로컬 캐시에서 다시 사용되지 않게 한다.
+		self.LastData[key] = nil
+	end
+
+	self:SetSaving(key,false)
+	self.IsGetting[key] = nil
+	self.IsSaving[key] = nil
+	return success
+end
+
+-- MemoryStore 항목만 삭제한다. DataStore 데이터가 남아 있으면 다음 Get에서 다시 만들어질 수 있다.
+function KrossSync:RemoveMemory(key) local self = self :: KrossSync<unknown,unknown>
+	if self.IsGetting[key] or self.IsSaving[key] then
+		return false
+	end
+
+	self:SetSaving(key,true)
+	local success = RemoveMemoryKey(self,key)
+
+	if success then
+		-- 단독 MemoryStore 삭제는 기존 로컬 tombstone 상태도 해제한다.
+		self.LastData[key] = nil
+		self.RemovedKeys[key] = nil
+	end
+
+	self:SetSaving(key,false)
+	self.IsGetting[key] = nil
+	self.IsSaving[key] = nil
+	return success
+end
+
+
+-- 현재 서버의 JobId를 제거하고, 마지막 서버라면 최신 data 필드를 DataStore에 최종 저장한다.
 function KrossSync:UnSync(key)
+	-- 동기화하지 않은 키는 해제할 수 없다.
+	if not self.LastData[key] then
+		return false
+	end
+
 	local LastData
-	local function data(old:Data<{},{}>)
-		for i,v in pairs(old.onlineServers or {}) do
-			if v == game.JobId then
-				table.remove(old.onlineServers, i)
-				LastData = old
-				break
+	local function data(old:Data<unknown,unknown>)
+		-- 중복된 현재 JobId도 모두 제거해 서버 목록을 정상화한다.
+		old.onlineServers = NormalizeOnlineServers(old.onlineServers)
+		for i = #old.onlineServers,1,-1 do
+			if old.onlineServers[i] == game.JobId then
+				table.remove(old.onlineServers,i)
 			end
 		end
+		LastData = old
 		return old
 	end
+	-- 종료 처리에서는 전역 상태가 Error여도 마지막 정리를 시도하도록 force를 사용한다.
 	local success = self:SaveMemory(key,data,self.ExpirationTime,true)
 	if not success then
+		if IsKeyLocallyRemoved(self,key) then
+			self.LastData[key] = nil
+			return true
+		end
 		return false
 	else
 		if not LastData then
-			self.LastData[key] = nil
 			return false
 		end
 		if #(LastData.onlineServers or {})== 0 then
-			-- 이 키를 사용하는 서버가 더 없으므로 메모리 상태를 영구 데이터에 반영합니다.
+			-- 마지막 서버가 나갈 때 MemoryStore의 최신 data를 DataStore에 최종 반영한다.
 			success = self:SaveData(key,LastData,true)
-			self.LastData[key] = nil
+			if success then
+				self.LastData[key] = nil
+			else
+				self.LastData[key] = LastData
+			end
 			return success
 		end
 
@@ -766,11 +1327,11 @@ function KrossSync:UnSync(key)
 end
 
 
----------------------------------------------------------
+---------------------------------------------------------KrossSyncService 공개 API
 ---------------------------------------------------------
 
 export type KrossSyncService = {
-	get:<DataTemplate,MemoryTemplate>(StoreName:string,DataTemplate:DataTemplate,MemoryTemplate:MemoryTemplate,NormalExpirationTime:number?)->(KrossSync<DataTemplate,MemoryTemplate> | false),
+	get:<DataTemplate,MemoryTemplate>(StoreName:string,DataTemplate:DataTemplate,MemoryTemplate:MemoryTemplate,NormalExpirationTime:number?)->(KrossSync<MemoryTemplate,DataTemplate> | false),
 	KrossSyncs: {[string]:KrossSync<unknown,unknown> | nil},
 	State: State,
 	IsCritical: typeof(IsCritical),
@@ -781,35 +1342,35 @@ export type KrossSyncService = {
 local KrossSyncService:KrossSyncService = {}
 
 
------------------------공개 값------------------------
+-----------------------공개 상태------------------------
 
 KrossSyncService.KrossSyncs = {}
--- 전체/DataStore/MemoryStore의 현재 접근 상태
+-- 현재 전체/개별 저장소 상태와 Critical 여부를 외부에서 읽을 수 있게 공개한다.
 KrossSyncService.State = State
 KrossSyncService.IsCritical = IsCritical
 
-----공개 신호----
+---- 공개 신호----
 
--- 반복 오류로 치명적 상태가 바뀔 때 발생
+-- 짧은 시간에 오류가 누적되어 Critical 상태가 바뀔 때 발생한다.
 KrossSyncService.OnCriticalToggle = OnCriticalToggle
--- 저장 요청 오류가 발생할 때 위치와 요청 정보를 전달
+-- 저장소 요청이 최종 실패할 때 위치, 오류, 저장소 이름, 키, 입력값을 전달한다.
 KrossSyncService.OnError  = OnError
 
------------------------공개 함수---------------------
+-----------------------인스턴스 생성---------------------
 
--- StoreName마다 하나의 KrossSync 객체를 만들고 캐시합니다.
--- 같은 이름으로 다시 요청할 때 템플릿 테이블 참조가 다르면 false를 반환합니다.
 function KrossSyncService.get(StoreName,DataTemplate,MemoryTemplate,NormalExpirationTime)
+	-- 같은 StoreName은 하나의 인스턴스를 공유한다. 기존 인스턴스와 다른 템플릿 참조는 허용하지 않는다.
 	if KrossSyncService.KrossSyncs[StoreName] then
 		if KrossSyncService.KrossSyncs[StoreName].DataTemplate ~= DataTemplate or KrossSyncService.KrossSyncs[StoreName].MemoryTemplate ~= MemoryTemplate then
 			return false
 		end
-		
+
 		return KrossSyncService.KrossSyncs[StoreName]
 	end
-	
+
+	-- StoreName별 저장소 객체, 캐시, 잠금, Signal은 각 인스턴스가 독립적으로 가진다.
 	local self={
-		MaxRetryTime=nil,
+		MaxRetryTime=5,
 		Store = DataStoreService:GetDataStore(StoreName),
 		Map = MemoryStoreService:GetHashMap(StoreName),
 		MapName = StoreName,
@@ -817,18 +1378,23 @@ function KrossSyncService.get(StoreName,DataTemplate,MemoryTemplate,NormalExpira
 		MemoryTemplate = MemoryTemplate,
 		ExpirationTime = NormalExpirationTime or 600,
 		LastData = {},
-		--
+		RemovedKeys = {},
+		PendingDataSave = {},
+		PendingRemovalCleanup = {},
+		PendingRemovalVerification = {},
+		-- 키별 로컬 잠금
 		IsGetting = {},
 		IsSaving = {},
-		----.signal----
-		OnNewData = signal(), -- 다른 서버가 바꾼 메모리 데이터가 감지될 때 새 래퍼 전달
-		OnGettingToggle = signal(), -- 읽기 진행 여부(boolean) 전달
-		OnSavingToggle = signal(), -- 쓰기 진행 여부(boolean) 전달
-		-- TODO: 덮어쓰기 위치와 키를 알리는 OnOverwrite 신호 추가
+		---- 인스턴스별 신호----
+		OnNewData = signal(), -- 자동 동기화로 memory 내용이 바뀌었을 때 전체 래퍼 전달
+		OnGettingToggle = signal(), -- 조회 시작/종료 여부 전달
+		OnSavingToggle = signal(), -- 저장 시작/종료 여부 전달
+		-- TODO: 덮어쓰기 위치(DataStore/MemoryStore)를 알리는 신호 추가 검토
 	}
 
-	self = setmetatable(self,KrossSync)::KrossSync<typeof(DataTemplate),typeof(MemoryTemplate)>
+	self = setmetatable(self,KrossSync)::KrossSync<typeof(MemoryTemplate),typeof(DataTemplate)>
 
+	-- 종료 처리와 자동 동기화 루프를 연결한 뒤 서비스 캐시에 등록한다.
 	OnNewKrossSync:Fire(self)
 	KrossSyncService.KrossSyncs[StoreName] = self
 
@@ -837,7 +1403,7 @@ function KrossSyncService.get(StoreName,DataTemplate,MemoryTemplate,NormalExpira
 end
 
 -----------------------내부 상태 관리------------------- 
--- DataStore/MemoryStore의 치명 여부를 합산하고 변경 신호를 보냅니다.
+-- DataStore/MemoryStore 중 하나라도 Critical이면 Total도 Critical로 설정한다.
 local function setCritical(Data,Memory)
 	if Data == nil then
 		Data = IsCritical.Data
@@ -845,7 +1411,7 @@ local function setCritical(Data,Memory)
 	if Memory == nil then
 		Memory = IsCritical.Memory
 	end
-	
+
 	if Data == IsCritical.Data and Memory == IsCritical.Memory then
 		return
 	else
@@ -860,7 +1426,7 @@ local function setCritical(Data,Memory)
 	end
 end
 
--- 개별 저장소 상태를 갱신하고 우선순위에 따라 전체 상태를 계산합니다.
+-- 개별 저장소 상태를 갱신하고 우선순위에 따라 전체 상태를 계산한다.
 local function setState(Data, Memory)
 	if State.Total == "NoInternet" or Data == "NotReady" or Memory == "NotReady" then
 		return
@@ -873,7 +1439,7 @@ local function setState(Data, Memory)
 	end
 	Data = Data or State.Data
 	Memory = Memory or State.Memory
-	
+
 	State.Data = Data
 	State.Memory = Memory 
 
@@ -889,11 +1455,13 @@ local function setState(Data, Memory)
 end
 
 OnNewKrossSync:Connect(function(KrossSync)
-	-- 서버 종료 시 모든 활성 키에서 이 서버를 제거합니다. 마지막 서버인 키는 UnSync가 최종 저장합니다.
+	-- 서버 종료 시 현재 서버를 모든 키에서 해제하고 마지막 서버인 키는 최종 저장한다.
 	game:BindToClose(function()
+		-- Roblox 종료 제한보다 여유 있게 25초 안에서 정리를 마친다.
 		local CLOSE_DEADLINE = 25
 		local CloseTime = os.time()
 		for key,v in pairs(KrossSync.LastData) do
+			-- 키마다 독립적으로 UnSync를 재시도해 한 키의 실패가 다른 키를 막지 않게 한다.
 			task.spawn(function()
 				KrossSync:UnSync(key)
 				while KrossSync.LastData[key] do task.wait(1)
@@ -902,45 +1470,73 @@ OnNewKrossSync:Connect(function(KrossSync)
 			end)
 		end
 		while task.wait() do
+			-- 모든 로컬 캐시가 해제되면 종료 대기를 끝낸다.
 			local keys = 0
 			for k,v in pairs(KrossSync.LastData) do
 				keys += 1
 			end
 			if keys == 0 then break end
-			
+
 			if os.time() - CloseTime >= CLOSE_DEADLINE then
 				warn("KrossSync: BindToClose took too long to close. ("..(os.time()-CloseTime).."s)")
 				break
 			end
-			
+
 		end
 	end)
-	
-------------------
-	
-	-- 객체 생성 시 이미 캐시된 키가 있다면 첫 MemoryStore 확인 작업을 예약합니다.
+
+	------------------
+
+	-- 예약 당시의 캐시가 여전히 활성 상태일 때만 다른 서버의 변경을 가져온다.
+	-- 이 검사가 없으면 오래된 작업이 UnSync 직후 JobId와 LastData를 다시 만들 수 있다.
+	local function AutoGetMemory(key, previousData)
+		local activeData = KrossSync.LastData[key]
+		if activeData ~= previousData or not activeData.memory then
+			return
+		end
+
+		local memoryData = KrossSync:GetMemory(key,false)
+
+		if memoryData == nil then
+			-- 항목이 만료됐더라도 이 서버가 계속 동기화 중인 키만 MemoryStore에 복구한다.
+			local currentData = KrossSync.LastData[key]
+			if currentData and currentData.memory then
+				KrossSync:SaveMemory(key,currentData,KrossSync.ExpirationTime,false)
+			end
+			return
+		elseif memoryData == false then
+			return
+		end
+		-- GetMemory가 양보한 사이 UnSync/Remove가 완료됐다면 오래된 작업의 결과를 폐기한다.
+		if KrossSync.LastData[key] ~= memoryData then
+			return
+		end
+
+		-- 임시 memory 내용이 실제로 달라진 경우에만 OnNewData를 발생시킨다.
+		local memoryChanged = not deepEqual(previousData.memory,memoryData.memory)
+		memoryData.lastUpdate = os.time()
+		memoryData.dataCreateTime = math.max(previousData.dataCreateTime or 0,memoryData.dataCreateTime or 0)
+		KrossSync.LastData[key] = memoryData
+
+		if memoryChanged then
+			KrossSync.OnNewData:Fire(memoryData)
+		end
+	end
+
+	-- 인스턴스 생성 전에 캐시에 들어온 키가 있다면 첫 조회를 예약한다.
 	local tasks = {}::{[string]:thread}
 	for key, data in pairs(KrossSync.LastData) do
 		tasks[key] = task.spawn(function() 
-			task.wait(data.dataCreateTime+AUTO_GET_MEMORY_TIME - os.time())
-			if data.memory then
-				local m = KrossSync:GetMemory(key,false)
-				if m ~= false and m ~= nil then
-					data.lastUpdate = data.dataCreateTime
-					data.dataCreateTime = os.time()
-					if not deepEqual(data.memory,m.memory) then
-						data.memory = m.memory
-						KrossSync.OnNewData:Fire(m)
-					end
-				end
-			end
+			task.wait(math.max(0, data.dataCreateTime+AUTO_GET_MEMORY_TIME - os.time()))
+			AutoGetMemory(key,data)
 		end)
 	end
 
+	-- 키별 마지막 자동 조회 시각으로 최소 조회 간격을 보장한다.
 	local LastGetTime = {}
-	-- 활성 키의 MemoryStore를 주기적으로 확인하여 다른 서버의 변경을 감지합니다.
-	local Getting = task.spawn(function()
-		while task.wait() do -- 최초 확인 작업이 모두 끝날 때까지 대기
+	task.spawn(function()
+		-- 초기 예약 작업이 모두 끝난 뒤 반복 동기화 루프로 진입한다.
+		while task.wait() do
 			local i = 0
 			for key,thread in pairs(tasks) do
 				i+=1 break
@@ -950,34 +1546,21 @@ OnNewKrossSync:Connect(function(KrossSync)
 
 		while true do
 
-	
+			-- 현재 로컬에서 사용 중인 모든 키를 병렬로 조회한다.
 			for key, data in pairs(KrossSync.LastData) do
 				tasks[key]  = task.spawn(function() 
 					task.wait(math.max(0, (LastGetTime[key] or 0) +  AUTO_GET_MEMORY_TIME - os.time()))
 					task.wait(math.max(0, data.dataCreateTime + AUTO_GET_MEMORY_TIME - os.time()))
-					if data.memory then 
-						
-						local m = KrossSync:GetMemory(key,false)
-						if m ~= false and m ~= nil then
-							
-							data.lastUpdate = data.dataCreateTime
-							data.dataCreateTime = os.time()
-							
-							if not deepEqual(data.memory,m.memory) then
-								
-								data.memory = m.memory
-								KrossSync.OnNewData:Fire(m)
-							end
-						end
-					end
-					
+					AutoGetMemory(key,data)
+
 					LastGetTime[key] = os.time()
 					tasks[key] = nil
 				end)
 
 			end
 
-			while task.wait() do -- 이번 주기의 확인 작업이 모두 끝날 때까지 대기
+			-- 이번 주기의 모든 키 조회가 끝날 때까지 기다린다.
+			while task.wait() do
 				local i = 0
 				for key,thread in pairs(tasks) do
 					i+=1
@@ -985,7 +1568,8 @@ OnNewKrossSync:Connect(function(KrossSync)
 				end
 				if i == 0 then break end
 			end
-			
+
+			-- 오래 사용하지 않은 키의 조회 기록을 정리한다.
 			for key,v in pairs(LastGetTime) do
 				if os.time() - v >= AUTO_GET_MEMORY_TIME * 10 then
 					LastGetTime[key] = nil
@@ -994,49 +1578,136 @@ OnNewKrossSync:Connect(function(KrossSync)
 
 		end
 	end)
-	
+
+
 end)
 
--- 최근 오류가 임계값에 도달하면 잠시 해당 저장소를 치명적 상태로 표시합니다.
-OnError:Connect(function(pos, ErrorMessage, Name, Key, Data)
+local dataLastErrorTime = 0
+local memoryLastErrorTime = 0
+local dataRecoveryRunning = false
+local memoryRecoveryRunning = false
+
+-- 오류 감지 구간보다 오래된 기록을 큐 앞쪽부터 제거한다.
+local function TrimExpiredErrors(errorQueue,now)
+	while not errorQueue:isEmpty() do
+		local oldest = errorQueue:peek()
+		if type(oldest) ~= "table" or type(oldest.time) ~= "number" or now - oldest.time >= ERROR_RESET_TIME then
+			errorQueue:dequeue()
+		else
+			break
+		end
+	end
+end
+
+-- 저장소가 회복되면 해당 오류 큐를 완전히 비운다.
+local function ClearErrorQueue(errorQueue)
+	while not errorQueue:isEmpty() do
+		errorQueue:dequeue()
+	end
+end
+
+-- 저장소별로 하나의 회복 감시 작업만 실행한다.
+local function StartErrorRecovery(pos:number)
 	if pos == 1 then
-		dataErrorQueue:enqueue({ErrorMessage,Name,Key,Data})
-		if dataErrorQueue:getSize() >= CRITICAL_ERROR_COUNT then
-			if IsCritical.Data == true then
-				return
+		if dataRecoveryRunning then
+			return
+		end
+		dataRecoveryRunning = true
+	elseif pos == 2 then
+		if memoryRecoveryRunning then
+			return
+		end
+		memoryRecoveryRunning = true
+	else
+		return
+	end
+
+	-- 마지막 오류 이후 일정 시간 동안 추가 오류가 없을 때만 Critical 상태를 해제한다.
+	task.spawn(function()
+		while true do
+			local lastErrorTime
+			if pos == 1 then
+				lastErrorTime = dataLastErrorTime
+			else
+				lastErrorTime = memoryLastErrorTime
 			end
-			setCritical(true,nil)
-			setState("Error",nil)
-			task.wait(ERROR_RESET_TIME)
-			dataErrorQueue:dequeue()
-			if dataErrorQueue:getSize() < CRITICAL_ERROR_COUNT then
-				setCritical(false,nil)
-				setState("Access",nil)
+			local remaining = ERROR_RESET_TIME - (os.clock() - lastErrorTime)
+			if remaining <= 0 then
+				break
 			end
+			task.wait(remaining)
 		end
 
-	elseif pos == 2 then
-		memoryErrorQueue:enqueue({ErrorMessage,Name,Key,Data})
-		if memoryErrorQueue:getSize() >= CRITICAL_ERROR_COUNT then
-			if IsCritical.Memory == true then
-				return
+		if pos == 1 then
+			ClearErrorQueue(dataErrorQueue)
+			if IsCritical.Data then
+				setCritical(false,nil)
+				if State.Data == "Error" then
+					setState("Access",nil)
+				end
 			end
+			dataRecoveryRunning = false
+		else
+			ClearErrorQueue(memoryErrorQueue)
+			if IsCritical.Memory then
+				setCritical(nil,false)
+				if State.Memory == "Error" then
+					setState(nil,"Access")
+				end
+			end
+			memoryRecoveryRunning = false
+		end
+	end)
+end
+
+OnError:Connect(function(pos, ErrorMessage, Name, Key, Data)
+	-- 저장소 종류에 맞는 최근 오류 큐와 마지막 오류 시각을 선택한다.
+	local now = os.clock()
+	local errorQueue
+
+	if pos == 1 then
+		errorQueue = dataErrorQueue
+		dataLastErrorTime = now
+	elseif pos == 2 then
+		errorQueue = memoryErrorQueue
+		memoryLastErrorTime = now
+	else
+		return
+	end
+
+	-- 현재 감지 구간에 포함되는 오류만 남긴 뒤 새 오류를 기록한다.
+	TrimExpiredErrors(errorQueue,now)
+	errorQueue:enqueue({
+		time = now,
+		errorMessage = ErrorMessage,
+		name = Name,
+		key = Key,
+		data = Data,
+	})
+
+	-- Critical 판정에 필요한 개수만 유지해 큐가 무한히 커지지 않게 한다.
+	while errorQueue:getSize() > CRITICAL_ERROR_COUNT do
+		errorQueue:dequeue()
+	end
+
+	-- 제한 시간 안에 오류가 임계값에 도달하면 해당 저장소를 Critical/Error로 전환한다.
+	if errorQueue:getSize() >= CRITICAL_ERROR_COUNT then
+		if pos == 1 then
+			setCritical(true,nil)
+			setState("Error",nil)
+		else
 			setCritical(nil,true)
 			setState(nil,"Error")
-			task.wait(ERROR_RESET_TIME)
-			memoryErrorQueue:dequeue()
-			if memoryErrorQueue:getSize() < CRITICAL_ERROR_COUNT then
-				setCritical(nil,false)
-				setState(nil,"Access")
-			end
 		end
 	end
 
+	StartErrorRecovery(pos)
 end)
 
--- 시작 시 저장소 접근 권한을 확인하고 서비스 상태를 계속 유지합니다.
-task.spawn(function() -- 상태 감시
+-- 최초 저장소 접근 상태를 확인하고 서비스 전체 상태를 구성한다.
+task.spawn(function()
 	if RunService:IsStudio() then
+		-- Studio에서는 API Services 설정이 꺼진 403 오류를 초기에 분명하게 알린다.
 		local success,result = pcall(function()
 			return game:GetService("DataStoreService"):GetGlobalDataStore():SetAsync("KrossSync_Chack",{Time=os.time(),JobID=game.JobId}) 
 		end)
@@ -1050,8 +1721,9 @@ task.spawn(function() -- 상태 감시
 		end
 
 	end
-	
+
 	while true do
+		-- 준비 전에는 양쪽 서비스 객체를 확인하고, 정상 상태에서는 검사 주기를 늦춘다.
 		if State.Total == "Access" then
 			task.wait(5)
 		elseif State.Total == "Error" then
@@ -1069,18 +1741,21 @@ task.spawn(function() -- 상태 감시
 	end	
 end)
 
--- DataStore 요청 예산이 부족하면 새 요청을 잠시 막도록 NoAccess 상태로 전환합니다.
-task.spawn(function() -- 접근 예산 감시
-	while true do task.wait(15)
-		if dataErrorQueue:getSize() > 0 then
+-- DataStore 요청 예산이 고갈된 동안 일반 요청을 잠시 차단한다.
+task.spawn(function()
+	while true do task.wait(10)
+		if State.Data == "NoAccess" then
+			-- 차단 상태에서는 실제 쓰기 검사를 통해 회복 여부를 확인한다.
+			local storeStatus = IsStoreOkay("Data","High")
+			if storeStatus.Data then
+				setState("Access",nil)
+			end
+		elseif dataErrorQueue:getSize() > 0 then
+			-- 최근 DataStore 오류가 있을 때만 요청 예산 고갈 여부를 검사한다.
 			local writeBudget = DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.StandardWrite)
 			local readBudget = DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.StandardRead)
-			if writeBudget <= 1 then
+			if writeBudget <= 1 or readBudget <= 1 then
 				setState("NoAccess",nil)
-			elseif readBudget <= 1 then
-				setState("NoAccess",nil)
-			elseif State.Total == "NoAccess" then
-				setState("Access",nil)
 			end
 		end
 	end
