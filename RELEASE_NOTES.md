@@ -51,6 +51,6 @@
 
 - V0.0.1과 같은 저장소 및 키를 혼합 운영하지 마세요. 새 저장 순서와 삭제 표식의 호환성을 보장하지 않습니다.
 - `Remove`와 `RemoveData`는 영구 삭제 표식을 남깁니다. 삭제된 키는 일반 `Get`이나 `Set`으로 재생성하지 않습니다. 최상위 `data.__krossSyncRemoved`는 내부 표식용 예약 필드입니다.
-- 배포에는 이 디렉터리의 `KrossSync.luau`를 사용하세요. V0.0.1은 `source/legacy/V0.0.1/`에 보관합니다.
+- 영어 버전은 `source/KrossSync.luau`, 한국어 버전은 `source/KR/KrossSync_KR.luau`입니다. 두 버전 중 하나를 선택하고 ModuleScript 이름을 `KrossSync`로 지정하세요. V0.0.1은 `legacy/V0.0.1/`에 보관합니다.
 - 모듈이 사용하는 `ReplicatedStorage.scr.Library.Signal`의 Signal+ 의존성을 설치해야 합니다.
 - 일반 운영에서는 회귀 및 다중 서버 테스트의 `RunTests`를 끄거나 테스트 Script를 배포에서 제외하세요.
