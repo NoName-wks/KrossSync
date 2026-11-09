@@ -29,7 +29,7 @@ SOFTWARE.
 --------------------------------------------------------------------------------
 
 KrossSync
-V.0.0.2
+V.0.0.3 (Alpha)
 
 DataStore에는 일반 키의 data 필드만 저장하고 삭제된 키에는 영구 표식을 남긴다.
 MemoryStore에는 임시 memory와 서버 목록을 포함한 전체 동기화 래퍼를 저장한다.
@@ -1587,7 +1587,7 @@ function KrossSync:RemoveMemory(key) local self = self :: KrossSync<unknown,unkn
 end
 
 
--- 현재 서버의 JobId를 제거하고, 마지막 서버라면 최신 data 필드를 DataStore에 최종 저장한다.
+-- 현재 서버 JobId를 제거하고 공유 data를 영구 저장한 뒤 동기화를 해제한다.
 function KrossSync:UnSync(key)
 	-- 동기화하지 않은 키는 해제할 수 없다.
 	if not self.LastData[key] then
@@ -1603,7 +1603,6 @@ function KrossSync:UnSync(key)
 				table.remove(old.onlineServers,i)
 			end
 		end
-		LastData = old
 		return old
 	end
 	-- 종료 처리에서는 전역 상태가 Error여도 마지막 정리를 시도하도록 force를 사용한다.
@@ -1615,23 +1614,21 @@ function KrossSync:UnSync(key)
 		end
 		return false
 	else
+		LastData = self.LastData[key]
 		if not LastData then
 			return false
 		end
-		if #(LastData.onlineServers or {})== 0 then
-			-- 마지막 서버가 나갈 때 MemoryStore의 최신 data를 DataStore에 최종 반영한다.
-			success = self:SaveData(key,LastData,true)
-			if success then
-				self.LastData[key] = nil
-			else
-				self.LastData[key] = LastData
-			end
-			return success
+		-- 다른 서버 ID가 남아 있어도 UpdateAsync가 확정한 최신 값을 사용한다.
+		local reason
+		success, reason = self:SaveData(key,LastData,true)
+		-- 더 최신인 영구 저장본이 있으면 오래된 공유 값으로 덮어쓰지 않는다.
+		success = success or reason == "stale"
+		if success then
+			self.LastData[key] = nil
+		elseif not IsKeyLocallyRemoved(self,key) then
+			self.LastData[key] = LastData
 		end
-
-		self.LastData[key] = nil
-
-		return true
+		return success
 	end
 
 end
@@ -1894,61 +1891,29 @@ OnNewKrossSync:Connect(function(KrossSync)
 		end
 	end
 
-	-- 인스턴스 생성 전에 캐시에 들어온 키가 있다면 첫 조회를 예약한다.
+	-- 키별 15초 주기를 유지하며 느리거나 실패한 키가 다른 키의 조회를 막지 않게 한다.
 	local tasks = {}::{[string]:thread}
 	local LastGetTime = {}
-	for key, data in pairs(KrossSync.LastData) do
-		tasks[key] = task.spawn(function() 
-			task.wait(math.max(0, data.dataCreateTime+AUTO_GET_MEMORY_TIME - os.time()))
-			AutoGetMemory(key,data)
-			LastGetTime[key] = os.time()
-			tasks[key] = nil
-		end)
-	end
-
-	-- 키별 마지막 자동 조회 시각으로 최소 조회 간격을 보장한다.
 	task.spawn(function()
-		-- 초기 예약 작업이 모두 끝난 뒤 반복 동기화 루프로 진입한다.
-		while task.wait() do
-			local i = 0
-			for key,thread in pairs(tasks) do
-				i+=1 break
-			end
-			if i == 0 then break end
-		end
-
 		while true do
-
-			-- 현재 로컬에서 사용 중인 모든 키를 병렬로 조회한다.
 			for key, data in pairs(KrossSync.LastData) do
-				tasks[key]  = task.spawn(function() 
-					task.wait(math.max(0, (LastGetTime[key] or 0) +  AUTO_GET_MEMORY_TIME - os.time()))
-					task.wait(math.max(0, data.dataCreateTime + AUTO_GET_MEMORY_TIME - os.time()))
-					AutoGetMemory(key,data)
-
-					LastGetTime[key] = os.time()
-					tasks[key] = nil
-				end)
-
-			end
-
-			-- 이번 주기의 모든 키 조회가 끝날 때까지 기다린다.
-			while task.wait() do
-				local i = 0
-				for key,thread in pairs(tasks) do
-					i+=1
-					break
+				if not tasks[key] then
+					tasks[key] = task.spawn(function()
+						task.wait(math.max(0, (LastGetTime[key] or 0) + AUTO_GET_MEMORY_TIME - os.time()))
+						task.wait(math.max(0, data.dataCreateTime + AUTO_GET_MEMORY_TIME - os.time()))
+						local success, result = pcall(AutoGetMemory,key,data)
+						LastGetTime[key] = os.time()
+						tasks[key] = nil
+						if not success then warn("Automatic memory refresh failed:",key,result) end
+					end)
 				end
-				if i == 0 then break end
 			end
-
-			-- 오래 사용하지 않은 키의 조회 기록을 정리한다.
-			for key,v in pairs(LastGetTime) do
-				if os.time() - v >= AUTO_GET_MEMORY_TIME * 10 then
+			for key in pairs(LastGetTime) do
+				if not KrossSync.LastData[key] and not tasks[key] then
 					LastGetTime[key] = nil
 				end
 			end
-
+			task.wait(1)
 		end
 	end)
 

@@ -29,7 +29,7 @@ SOFTWARE.
 --------------------------------------------------------------------------------
 
 KrossSync
-V.0.0.2
+V.0.0.3 (Alpha)
 
 DataStore stores raw data for normal keys and permanent markers for deleted keys.
 MemoryStore stores the full synchronization wrapper, including temporary memory and server lists.
@@ -1587,7 +1587,7 @@ function KrossSync:RemoveMemory(key) local self = self :: KrossSync<unknown,unkn
 end
 
 
--- Remove the current JobId and final-save the latest data if this is the last server.
+-- Remove the current JobId and persist the latest shared data before leaving.
 function KrossSync:UnSync(key)
 	-- A key that is not synchronized cannot be unsubscribed.
 	if not self.LastData[key] then
@@ -1603,7 +1603,6 @@ function KrossSync:UnSync(key)
 				table.remove(old.onlineServers,i)
 			end
 		end
-		LastData = old
 		return old
 	end
 	-- Use force during shutdown to attempt cleanup even when global state is Error.
@@ -1615,23 +1614,21 @@ function KrossSync:UnSync(key)
 		end
 		return false
 	else
+		LastData = self.LastData[key]
 		if not LastData then
 			return false
 		end
-		if #(LastData.onlineServers or {})== 0 then
-			-- Final-save the latest MemoryStore data when the last server leaves.
-			success = self:SaveData(key,LastData,true)
-			if success then
-				self.LastData[key] = nil
-			else
-				self.LastData[key] = LastData
-			end
-			return success
+		-- Use the committed UpdateAsync result, even if other server IDs remain.
+		local reason
+		success, reason = self:SaveData(key,LastData,true)
+		-- A newer durable version already supersedes this shared snapshot.
+		success = success or reason == "stale"
+		if success then
+			self.LastData[key] = nil
+		elseif not IsKeyLocallyRemoved(self,key) then
+			self.LastData[key] = LastData
 		end
-
-		self.LastData[key] = nil
-
-		return true
+		return success
 	end
 
 end
@@ -1894,61 +1891,29 @@ OnNewKrossSync:Connect(function(KrossSync)
 		end
 	end
 
-	-- Schedule the first read for keys cached before the instance was created.
+	-- Keep the per-key 15-second cadence without making healthy keys wait for slow ones.
 	local tasks = {}::{[string]:thread}
 	local LastGetTime = {}
-	for key, data in pairs(KrossSync.LastData) do
-		tasks[key] = task.spawn(function()
-			task.wait(math.max(0, data.dataCreateTime+AUTO_GET_MEMORY_TIME - os.time()))
-			AutoGetMemory(key,data)
-			LastGetTime[key] = os.time()
-			tasks[key] = nil
-		end)
-	end
-
-	-- Use the last automatic read time to enforce a minimum interval per key.
 	task.spawn(function()
-		-- Wait for the initial scheduled reads before entering the polling loop.
-		while task.wait() do
-			local i = 0
-			for key,thread in pairs(tasks) do
-				i+=1 break
-			end
-			if i == 0 then break end
-		end
-
 		while true do
-
-			-- Read all currently active local keys in parallel.
 			for key, data in pairs(KrossSync.LastData) do
-				tasks[key]  = task.spawn(function()
-					task.wait(math.max(0, (LastGetTime[key] or 0) +  AUTO_GET_MEMORY_TIME - os.time()))
-					task.wait(math.max(0, data.dataCreateTime + AUTO_GET_MEMORY_TIME - os.time()))
-					AutoGetMemory(key,data)
-
-					LastGetTime[key] = os.time()
-					tasks[key] = nil
-				end)
-
-			end
-
-			-- Wait for every read in this polling cycle to finish.
-			while task.wait() do
-				local i = 0
-				for key,thread in pairs(tasks) do
-					i+=1
-					break
+				if not tasks[key] then
+					tasks[key] = task.spawn(function()
+						task.wait(math.max(0, (LastGetTime[key] or 0) + AUTO_GET_MEMORY_TIME - os.time()))
+						task.wait(math.max(0, data.dataCreateTime + AUTO_GET_MEMORY_TIME - os.time()))
+						local success, result = pcall(AutoGetMemory,key,data)
+						LastGetTime[key] = os.time()
+						tasks[key] = nil
+						if not success then warn("Automatic memory refresh failed:",key,result) end
+					end)
 				end
-				if i == 0 then break end
 			end
-
-			-- Discard polling timestamps for keys that have not been used for a long time.
-			for key,v in pairs(LastGetTime) do
-				if os.time() - v >= AUTO_GET_MEMORY_TIME * 10 then
+			for key in pairs(LastGetTime) do
+				if not KrossSync.LastData[key] and not tasks[key] then
 					LastGetTime[key] = nil
 				end
 			end
-
+			task.wait(1)
 		end
 	end)
 
