@@ -1,4 +1,4 @@
--- KrossSync V0.0.3 regression test
+-- KrossSync V0.1.0 regression test
 -- Place this Script next to the KrossSync ModuleScript and run it on the server.
 -- Studio requires: Game Settings > Security > Enable Studio Access to API Services.
 
@@ -18,7 +18,7 @@ end
 
 local KrossSyncService = require(script.Parent:WaitForChild("KrossSync"))
 
-local STORE_NAME = "KrossSync_V003_REGRESSION_TEST"
+local STORE_NAME = "KrossSync_V010_REGRESSION_TEST"
 local EXPIRATION_TIME = 120
 local AUTO_RESTORE_TIMEOUT = 40
 local REMOVE_SETTLE_TIME = 20
@@ -680,7 +680,7 @@ local function testAutoGetMemoryUsesNewerDurableData()
 
 	ks.Store:UpdateAsync(key, function(_, keyInfo)
 		local metadata = keyInfo:GetMetadata()
-		metadata.__krossSyncRevision = (metadata.__krossSyncRevision or 0) + 1
+		metadata.__ksRev = (metadata.__ksRev or 0) + 1
 		return makeRawData(321), keyInfo:GetUserIds(), metadata
 	end)
 	ks.Map:RemoveAsync(key)
@@ -726,15 +726,12 @@ local function testRemoveLocksAndDoesNotRestore()
 	assertTrue(data ~= false and data ~= nil, "Initial Get should succeed")
 
 	ks:SetGetting(key, true)
-	local blockedData, blockedMemory = ks:Remove(key)
-	ks:SetGetting(key, false)
-	assertTrue(blockedData == false and blockedMemory == false, "Remove should reject a busy key")
+	local receipt = ks:Remove(key, false)
 	assertTrue(ks.Store:GetAsync(key) ~= nil, "Blocked Remove must not delete DataStore")
 	assertTrue(ks.Map:GetAsync(key) ~= nil, "Blocked Remove must not delete MemoryStore")
 
-	-- Give the background loop time to capture this key before removing it.
-	task.wait(0.5)
-	local dataRemoved, memoryRemoved = ks:Remove(key)
+	ks:SetGetting(key, false)
+	local dataRemoved, memoryRemoved = receipt:Await()
 	assertTrue(dataRemoved == true, "Remove should mark DataStore as removed")
 	assertTrue(memoryRemoved == true, "Remove should mark MemoryStore as removed")
 	assertTrue(ks.LastData[key] == nil, "Remove should clear LastData")
@@ -776,7 +773,7 @@ local function testRemoveRequiresDurableTombstone()
 
 	function proxy:UpdateAsync(storeKey, transform)
 		updateAsyncCalls += 1
-		if updateAsyncCalls <= 2 then
+		if updateAsyncCalls <= 4 then
 			error("Injected DataStore tombstone failure")
 		end
 		return realStore:UpdateAsync(storeKey, transform)
@@ -794,7 +791,7 @@ local function testRemoveRequiresDurableTombstone()
 	ks.MaxRetryTime = oldMaxRetryTime
 
 	assertTrue(dataRemoved == false and memoryRemoved == false, "MemoryStore must not be marked removed before durable deletion succeeds")
-	assertTrue(updateAsyncCalls == 2, `Expected two tombstone attempts, got {updateAsyncCalls}`)
+	assertTrue(updateAsyncCalls == 4, `Expected four tombstone attempts, got {updateAsyncCalls}`)
 	assertTrue(realStore:GetAsync(key) ~= nil, "Failed removal must preserve the DataStore value")
 	assertTrue(ks.Map:GetAsync(key).__krossSyncRemoved ~= true, "Failed removal must preserve the MemoryStore value")
 	local retriedData, retriedMemory = ks:Remove(key)
@@ -1162,7 +1159,7 @@ local function testSetPersistsBeforeMemory()
 	local stored, keyInfo = realStore:GetAsync(key)
 	assertTrue(stored.coins == 5, "Set should persist the raw data")
 	local shared = realMap:GetAsync(key)
-	assertTrue(shared.data.coins == 5 and shared.dataRevision == keyInfo:GetMetadata().__krossSyncRevision, "Set should publish the persisted version")
+	assertTrue(shared.data.coins == 5 and shared.dataRevision == keyInfo:GetMetadata().__ksRev, "Set should publish the persisted version")
 	cleanupKey(key)
 end
 
@@ -1319,8 +1316,9 @@ local function testLateSetCannotOverwriteNewerMemory()
 		return firstWaiting
 	end)
 	assertTrue(waiting == true, "First Set should wait after DataStore commit")
-	local second = table.pack(ks:Set(key, {data = makeRawData(2)}, EXPIRATION_TIME, true))
+	local queued = ks:Set(key, {data = makeRawData(2)}, EXPIRATION_TIME, true, false)
 	releaseFirst = true
+	local second = table.pack(queued:Await())
 	local finished = waitForValue(10, 0.05, function()
 		return firstResult ~= nil
 	end)
@@ -1354,11 +1352,12 @@ local function testLateSetKeepsNewerPendingPublish()
 			firstResult = table.pack(pcall(ks.Set, ks, key, {data = makeRawData(1)}, EXPIRATION_TIME, true))
 		end)
 		assertTrue(waitForValue(10, 0.05, function() return firstWaiting end), "First Set should wait after its commit")
-		local dataSaved, memorySaved = ks:Set(key, {data = makeRawData(2)}, EXPIRATION_TIME, true)
+		local queued = ks:Set(key, {data = makeRawData(2)}, EXPIRATION_TIME, true, false)
+		releaseFirst = true
+		local dataSaved, memorySaved = queued:Await()
 		assertTrue(dataSaved and not memorySaved, "Newer Set should queue its committed value")
 		local newerPending = ks.PendingMemoryPublish[key]
 		assertTrue(newerPending ~= nil, "Newer Set should have a pending publication")
-		releaseFirst = true
 		assertTrue(waitForValue(10, 0.05, function() return firstResult ~= nil end), "First Set should finish")
 		assertTrue(firstResult[1] and firstResult[2] and not firstResult[3], "Older Set should report partial success")
 		assertTrue(ks.PendingMemoryPublish[key] == newerPending, "Older Set must not replace the newer pending publication")
@@ -1377,7 +1376,7 @@ end
 local function testSetDoesNotPublishAfterDurableRemoval()
 	local key = `KS_SetRemove_{runId}`
 	local realStore, realMap, realSetMemory = ks.Store, ks.Map, ks.SetMemory
-	local metadata = {__krossSyncRevision = 0}
+	local metadata = {__ksRev = 0}
 	local removed = false
 	local memoryWrites = 0
 	local keyInfo = {
@@ -1562,7 +1561,7 @@ local function testPendingPublishAfterUnSync(mode)
 		dataRevision = 1, dataSequence = 0, dataCreateTime = os.time(),
 		__krossSyncDataCheckAfter = os.time() + 300,
 	}
-	local durable, metadata, reads = makeRawData(10), {__krossSyncRevision = 1}, 0
+	local durable, metadata, reads = makeRawData(10), {__ksRev = 1}, 0
 	local keyInfo = {
 		GetMetadata = function() return copy(metadata) end,
 		GetUserIds = function() return {} end,
@@ -1657,7 +1656,7 @@ end
 local function testSetDoesNotRepeatCommittedUpdate()
 	local key = `KS_DataFault_{runId}`
 	local realStore, realMap, oldRetryTime = ks.Store, ks.Map, ks.MaxRetryTime
-	local committed, metadata, calls = makeRawData(0), {__krossSyncRevision = 0}, 0
+	local committed, metadata, calls = makeRawData(0), {__ksRev = 0}, 0
 	local keyInfo = {
 		GetMetadata = function() return table.clone(metadata) end,
 		GetUserIds = function() return {} end,
@@ -1690,7 +1689,7 @@ end
 local function testSaveDataDoesNotRepeatCommittedUpdate()
 	local key = `KS_SaveFault_{runId}`
 	local realStore, oldRetryTime = ks.Store, ks.MaxRetryTime
-	local committed, metadata, calls = makeRawData(0), {__krossSyncRevision = 0}, 0
+	local committed, metadata, calls = makeRawData(0), {__ksRev = 0}, 0
 	local keyInfo = {
 		GetMetadata = function() return table.clone(metadata) end,
 		GetUserIds = function() return {} end,
@@ -1754,7 +1753,7 @@ end
 local function testSetStopsAfterInterleavedWrite()
 	local key = `KS_DataInter_{runId}`
 	local realStore, oldRetryTime = ks.Store, ks.MaxRetryTime
-	local committed, metadata, calls = makeRawData(0), {__krossSyncRevision = 0}, 0
+	local committed, metadata, calls = makeRawData(0), {__ksRev = 0}, 0
 	local keyInfo = {
 		GetMetadata = function() return table.clone(metadata) end,
 		GetUserIds = function() return {} end,
@@ -1765,8 +1764,8 @@ local function testSetStopsAfterInterleavedWrite()
 		if value then committed, metadata = value, nextMetadata end
 		if calls == 1 then
 			committed = makeRawData(10)
-			metadata.__krossSyncRevision += 1
-			metadata.__krossSyncOperationId = "remote"
+			metadata.__ksRev += 1
+			metadata.__ksOp = "remote"
 			error("Injected lost response after another durable write")
 		end
 		return value, keyInfo
@@ -1818,8 +1817,8 @@ end
 local function testDataCallbackConflictUsesLatestValue()
 	local key = `KS_DataRace_{runId}`
 	local realStore, realSetMemory = ks.Store, ks.SetMemory
-	local firstMetadata = {__krossSyncRevision = 0}
-	local latestMetadata = {__krossSyncRevision = 1}
+	local firstMetadata = {__ksRev = 0}
+	local latestMetadata = {__ksRev = 1}
 	local firstInfo = {GetMetadata = function() return table.clone(firstMetadata) end, GetUserIds = function() return {} end}
 	local latestInfo = {GetMetadata = function() return table.clone(latestMetadata) end, GetUserIds = function() return {} end}
 	local committed
@@ -1879,7 +1878,7 @@ local function testSetMemoryRestoresDurableDataOnMiss()
 		onlineServers = {game.JobId}, dataRevision = 1, dataSequence = 0,
 	}
 	local reads, shared = 0, nil
-	local keyInfo = {GetMetadata = function() return {__krossSyncRevision = 2} end}
+	local keyInfo = {GetMetadata = function() return {__ksRev = 2} end}
 	ks.Store = {Name = "durable-store", GetAsync = function()
 		reads += 1
 		return makeRawData(5), keyInfo
@@ -1984,9 +1983,9 @@ local function testPeriodicDurableVerification(removed, failFirstRead, busy)
 	local result = table.pack(xpcall(function()
 		realStore:UpdateAsync(key, function(old, info)
 			local metadata = info:GetMetadata()
-			metadata.__krossSyncRevision = (metadata.__krossSyncRevision or 0) + 1
-			metadata.__krossSyncSourceRevision = nil
-			metadata.__krossSyncSourceSequence = nil
+			metadata.__ksRev = (metadata.__ksRev or 0) + 1
+			metadata.__ksSrcRev = nil
+			metadata.__ksSrcSeq = nil
 			return if removed then {__krossSyncRemoved = true, removedAt = os.time()} else makeRawData(81), info:GetUserIds(), metadata
 		end)
 		realMap:UpdateAsync(key, function(old)
@@ -2127,3 +2126,4 @@ if not ok then
 end
 
 log("ALL TESTS PASSED", runId)
+

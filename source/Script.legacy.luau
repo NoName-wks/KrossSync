@@ -1,4 +1,4 @@
--- KrossSync V0.0.2 regression test
+-- KrossSync V0.0.3 regression test
 -- Place this Script next to the KrossSync ModuleScript and run it on the server.
 -- Studio requires: Game Settings > Security > Enable Studio Access to API Services.
 
@@ -18,7 +18,7 @@ end
 
 local KrossSyncService = require(script.Parent:WaitForChild("KrossSync"))
 
-local STORE_NAME = "KrossSync_V002_REGRESSION_TEST"
+local STORE_NAME = "KrossSync_V003_REGRESSION_TEST"
 local EXPIRATION_TIME = 120
 local AUTO_RESTORE_TIMEOUT = 40
 local REMOVE_SETTLE_TIME = 20

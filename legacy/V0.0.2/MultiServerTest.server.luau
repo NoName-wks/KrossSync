@@ -21,21 +21,20 @@ if combined then
 end
 
 local MemoryStoreService = game:GetService("MemoryStoreService")
-local coordination = MemoryStoreService:GetHashMap("KrossSync_V003_MULTI_COORD")
-local results = game:GetService("DataStoreService"):GetDataStore("KrossSync_V003_MULTI_RESULTS")
+local coordination = MemoryStoreService:GetHashMap("KrossSync_V002_MULTI_COORD")
+local results = game:GetService("DataStoreService"):GetDataStore("KrossSync_V002_MULTI_RESULTS")
 local KrossSyncService = require(script.Parent:WaitForChild("KrossSync"))
 local dataTemplate = {coins = 0}
 local memoryTemplate = {remoteMarker = "", writers = {}}
-local sync = KrossSyncService.get("KrossSync_V003_MULTI_TEST", dataTemplate, memoryTemplate, if combined then cacheTTL else 180)
+local sync = KrossSyncService.get("KrossSync_V002_MULTI_TEST", dataTemplate, memoryTemplate, if combined then cacheTTL else 180)
 assert(sync ~= false, "KrossSync initialization failed")
 local getOptions = Instance.new("DataStoreGetOptions")
 getOptions.UseCache = false
-local key = "K3_" .. runId
+local key = "K2_" .. runId
 local checks = {}
 local metrics = {requests = {}, requestErrors = 0, injectedFailures = 0, writes = 0, writesByKey = {}, writeFailures = 0, latencyTotal = 0, latencyMax = 0, remoteObserved = false, remoteAgeMax = 0, durableChecks = {}}
 local loadKeys, loadKeySet = {}, {}
 local recoveryKeys = {key .. "_R", key .. "_D", key .. "_H"}
-local unSyncKey = key .. "_U"
 local loadRunning, faultArmed, recoveryArmed = false, false, false
 local loadWorker, loadError
 local heartbeatAt = 0
@@ -319,42 +318,6 @@ local function runConcurrentUpdates()
 	end)
 	checks.concurrentMemory = true
 	log("CHECK concurrent SetMemory")
-
-	local initial = sync:Get(unSyncKey, true)
-	assert(initial and initial.data.coins == 0, "UnSync fixture must start from the template")
-	waitStart("unSyncReady")
-	if role == "second" then
-		assert(sync:SaveMemory(unSyncKey, function(old)
-			old.data.coins = 20
-			return old
-		end, 180, true), "UnSync fixture must update only the shared data")
-		updateCoordination(function(state) state.unSyncWritten = true; return state end)
-		waitFor("first server final save", 40, function()
-			local state = readCoordination()
-			return state and state.unSyncSaved
-		end)
-		local stored = originalStore:GetAsync(unSyncKey, getOptions)
-		assert(stored and stored.coins == 20, "First UnSync must persist while this server remains")
-		assert(sync:UnSync(unSyncKey), "Second fixture UnSync failed")
-	else
-		local peerState = waitFor("shared-only data change", 40, function()
-			local state = readCoordination()
-			return state and state.unSyncWritten and state
-		end)
-		waitFor("UnSync fixture idle", 30, function()
-			return not sync.IsGetting[unSyncKey] and not sync.IsSaving[unSyncKey]
-		end)
-		-- Retain the initial snapshot to model a server whose next poll has not run.
-		sync.LastData[unSyncKey] = initial
-		assert(sync:UnSync(unSyncKey), "First fixture UnSync failed")
-		local stored = originalStore:GetAsync(unSyncKey, getOptions)
-		local shared = originalMap:GetAsync(unSyncKey)
-		assert(stored and stored.coins == 20 and stored.data == nil and stored.memory == nil, "UnSync must persist the latest raw data")
-		assert(shared and table.find(shared.onlineServers, peerState.second) and not table.find(shared.onlineServers, joined.first), "UnSync must leave the second server subscribed")
-		updateCoordination(function(state) state.unSyncSaved = true; return state end)
-	end
-	checks.unSyncLatestData = true
-	log("CHECK UnSync latest shared data")
 end
 
 local sawMarker = false
@@ -460,8 +423,6 @@ local function runSecond()
 	if not combined then
 		sync.Store:RemoveAsync(key)
 		sync.Map:RemoveAsync(key)
-		sync.Store:RemoveAsync(unSyncKey)
-		sync.Map:RemoveAsync(unSyncKey)
 		coordination:RemoveAsync(runId)
 	end
 end
@@ -572,7 +533,7 @@ local function runCombined()
 		if sync.LastData[loadKey] then assert(sync:UnSync(loadKey), "Observer load key UnSync failed") end
 	end
 	if exitMode == "Normal" then
-		local cleanupKeys = {key, unSyncKey}
+		local cleanupKeys = {key}
 		for _, storeKey in ipairs(loadKeys) do table.insert(cleanupKeys, storeKey) end
 		for _, storeKey in ipairs(recoveryKeys) do table.insert(cleanupKeys, storeKey) end
 		for _, storeKey in ipairs(cleanupKeys) do
