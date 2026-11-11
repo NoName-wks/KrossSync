@@ -22,7 +22,6 @@ V0.0.3 영어 주석 버전은 `source/KrossSync.luau`, 한국어 주석 버전�
 - [V0.0.3 모의 테스트 실행기](source/Tests/RunTests.luau)
 - [V0.0.2 영어 레거시](legacy/V0.0.2/KrossSync.luau)
 - [V0.0.2 한국어 레거시](legacy/V0.0.2/KR/KrossSync_KR.luau)
-- [V0.1.0 작업본](source/NEXT%20VERSION/V0.1.0/README.md)
 - [V0.0.1 레거시](legacy/V0.0.1/KrossSync.lua)
 - [V0.0.1 한국어 레거시](legacy/V0.0.1/Korean/KrossSync_KR.lua)
 - [V0.0.0 레거시](legacy/V0.0.0/KrossSync.lua)
