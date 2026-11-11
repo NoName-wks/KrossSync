@@ -6,7 +6,7 @@
 
 ## 기준 소스
 
-`source/NEXT VERSION/V0.0.3/KrossSync.luau` 작업본을 기준으로 작성한 로컬 준비 문서입니다. [참조 소스](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau)는 커밋 `bf2cd0a`에 고정했습니다. 별도의 v0.0.3 릴리즈 태그를 전제로 하지 않습니다.
+v0.0.3은 `source/`로 이동했습니다. [기준 소스](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau)는 이동이 반영된 `main` 커밋 `06f3082`에 고정했습니다. `v0.0.3-alpha` 태그에는 이동 전 구조가 남아 있습니다.
 
 ## v0.0.2와의 차이
 
@@ -52,7 +52,7 @@
 
 ## 적용 시 확인
 
-1. v0.0.3 폴더의 영어·한국어 모듈 중 하나를 선택합니다.
+1. `source/`의 v0.0.3 영어·한국어 모듈 중 하나를 선택합니다.
 2. 같은 서버의 여러 플레이어가 길드를 공유하면 마지막 사용이 끝난 뒤 키를 해제합니다.
 3. 중요한 변경은 즉시 `Set`으로 저장하고, 해제 실패 시 새 쓰기를 멈춘 뒤 재시도합니다.
 4. 서로 다른 버전의 혼합 운영은 별도로 검증합니다.

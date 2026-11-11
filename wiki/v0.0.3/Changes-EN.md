@@ -6,7 +6,7 @@
 
 ## Source baseline
 
-This local draft is based on `source/NEXT VERSION/V0.0.3/KrossSync.luau`. The [reference source](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau) is pinned to commit `bf2cd0a`. It does not assume a separate v0.0.3 release tag.
+v0.0.3 moved to `source/`. The [reference source](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau) is pinned to `main` commit `06f3082`, which includes the move. The `v0.0.3-alpha` tag retains the earlier layout.
 
 ## Compared with v0.0.2
 
@@ -52,7 +52,7 @@ Actual abrupt server termination, real service response loss, production-scale l
 
 ## Before applying
 
-1. Choose one English or Korean module from the v0.0.3 folder.
+1. Choose the English or Korean v0.0.3 module from `source/`.
 2. If several players on one server share a guild, release the key only after its last local use.
 3. Persist important changes immediately with `Set`. If release fails, stop new writes and retry.
 4. Validate mixed-version operation separately.

@@ -2,7 +2,7 @@
 
 [한국어](Troubleshooting-KO) · [English](Troubleshooting-EN)
 
-v0.0.3 준비 문서입니다. [v0.0.3 작업본](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau)을 기준으로 합니다.
+v0.0.3 문제 해결 문서입니다. [v0.0.3 소스](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau)을 기준으로 합니다.
 
 ## 알려진 제한
 
@@ -90,7 +90,7 @@ v0.0.3의 `Remove`·`RemoveData`는 만료되지 않는 영구 삭제 표식을 
 
 ## 테스트하기
 
-[회귀 테스트](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/Script.legacy.luau)와 [다중 서버 테스트](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/MultiServerTest.server.luau)는 모듈 옆에 배치합니다. 일반 운영에서는 `RunTests=false`로 두거나 테스트 Script를 제외하세요. 별도 Experience와 StoreName을 사용하세요. 기록된 검증 결과와 한계는 [v0.0.3 변경점](Changes-KO#검증-기록)을 확인하세요. 라이브 테스트 결과는 `KrossSync_V003_MULTI_RESULTS`의 RunId 키에 남습니다.
+[회귀 테스트](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/Script.legacy.luau)와 [다중 서버 테스트](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/MultiServerTest.server.luau)는 모듈 옆에 배치합니다. 일반 운영에서는 `RunTests=false`로 두거나 테스트 Script를 제외하세요. 별도 Experience와 StoreName을 사용하세요. 기록된 검증 결과와 한계는 [v0.0.3 변경점](Changes-KO#검증-기록)을 확인하세요. 라이브 테스트 결과는 `KrossSync_V003_MULTI_RESULTS`의 RunId 키에 남습니다.
 
 [Issues](https://github.com/NoName-wks/KrossSync/issues)에 보고할 때 버전, 재현 조건, Output, State와 반환값을 포함하세요. 비밀 값이나 실제 플레이어 데이터는 첨부하지 마세요.
 

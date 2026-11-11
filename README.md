@@ -1,6 +1,8 @@
 # KrossSync V0.0.3 (Alpha)
 
-V0.0.3 영어 주석 버전은 `source/NEXT VERSION/V0.0.3/KrossSync.luau`, 한국어 주석 버전은 같은 폴더의 `KR/KrossSync_KR.luau`입니다. 폴더 이름은 `NEXT VERSION`이지만 이 README가 안내하는 배포 대상은 그 안의 V0.0.3입니다. 외부 서버 코드가 API를 호출할 때 저장을 요청하며, 어떤 변경이 중요한지는 호출하는 코드가 결정합니다.
+V0.0.3 영어 주석 버전은 `source/KrossSync.luau`, 한국어 주석 버전은 `source/KR/KrossSync_KR.luau`입니다. 외부 서버 코드가 API를 호출할 때 저장을 요청하며, 어떤 변경이 중요한지는 호출하는 코드가 결정합니다.
+
+[한국어 위키](https://github.com/NoName-wks/KrossSync/wiki/Home-KO) · [English Wiki](https://github.com/NoName-wks/KrossSync/wiki/Home-EN)
 
 **Alpha 릴리스:** 테스트와 피드백을 위한 버전입니다. 기록된 실제 두 라이브 서버의 동시 저장·정상 종료·복구 테스트는 통과했지만, 실제 서버 강제 중단, 서비스 응답 손실, 운영 규모 부하 및 장시간 안정성은 아직 미검증입니다. 변경점과 제한은 아래에 정리했습니다.
 
@@ -13,20 +15,23 @@ V0.0.3 영어 주석 버전은 `source/NEXT VERSION/V0.0.3/KrossSync.luau`, 한�
 
 ## 파일 구성
 
-- [V0.0.3 영어 버전](source/NEXT%20VERSION/V0.0.3/KrossSync.luau)
-- [V0.0.3 한국어 버전](source/NEXT%20VERSION/V0.0.3/KR/KrossSync_KR.luau)
-- [V0.0.3 Studio 회귀 테스트](source/NEXT%20VERSION/V0.0.3/Script.legacy.luau)
-- [V0.0.3 라이브 다중 서버 테스트](source/NEXT%20VERSION/V0.0.3/MultiServerTest.server.luau)
-- [V0.0.3 모의 테스트 실행기](source/NEXT%20VERSION/V0.0.3/Tests/RunTests.luau)
-- [기존 V0.0.2 영어 버전](source/KrossSync.luau)
-- [기존 V0.0.2 한국어 버전](source/KR/KrossSync_KR.luau)
+- [V0.0.3 영어 버전](source/KrossSync.luau)
+- [V0.0.3 한국어 버전](source/KR/KrossSync_KR.luau)
+- [V0.0.3 Studio 회귀 테스트](source/Script.legacy.luau)
+- [V0.0.3 라이브 다중 서버 테스트](source/MultiServerTest.server.luau)
+- [V0.0.3 모의 테스트 실행기](source/Tests/RunTests.luau)
+- [V0.0.2 영어 레거시](legacy/V0.0.2/KrossSync.luau)
+- [V0.0.2 한국어 레거시](legacy/V0.0.2/KR/KrossSync_KR.luau)
+- [V0.1.0 작업본](source/NEXT%20VERSION/V0.1.0/README.md)
 - [V0.0.1 레거시](legacy/V0.0.1/KrossSync.lua)
 - [V0.0.1 한국어 레거시](legacy/V0.0.1/Korean/KrossSync_KR.lua)
 - [V0.0.0 레거시](legacy/V0.0.0/KrossSync.lua)
 
+`v0.0.3-alpha` 태그의 소스 압축본에는 이동 전 경로가 남아 있습니다. 위 링크는 현재 `main`의 파일 구조를 기준으로 합니다.
+
 ## 설치와 배포
 
-1. 위 V0.0.3 영어 또는 한국어 버전 중 하나만 서버의 ModuleScript로 설치하고 이름을 `KrossSync`로 지정합니다. 기존 `source/KrossSync.luau`는 V0.0.2이므로 혼동하지 마세요.
+1. `source/`의 V0.0.3 영어 또는 한국어 버전 중 하나만 서버의 ModuleScript로 설치하고 이름을 `KrossSync`로 지정합니다. 두 버전을 동시에 실행하지 마세요.
 2. `ReplicatedStorage.scr.Library.Signal`에 Signal+ 의존성을 설치합니다. Studio의 실제 저장소 검사는 게시된 테스트 플레이스에서 API Services 접근을 허용해야 합니다.
 3. 운영 배포에서는 회귀·다중 서버 Script와 `Tests` 폴더를 제외합니다. 테스트용으로 유지한다면 Script를 비활성화하고 `RUN_TESTS=false`, `RunTests=false`를 확인한 뒤 게시합니다. Studio에서만 바꾸고 게시하지 않으면 기존 서버에는 반영되지 않습니다.
 4. 중요한 변경은 외부 코드가 즉시 `Set`을 호출하고 첫 번째 반환값을 확인합니다. `Save`나 `SetMemory`의 성공을 영구 저장 완료로 취급하지 않습니다.

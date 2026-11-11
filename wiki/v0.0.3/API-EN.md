@@ -2,7 +2,7 @@
 
 [한국어](API-KO) · [English](API-EN)
 
-Draft documentation for v0.0.3, based on the [v0.0.3 working copy](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau). The storage format and existing public return contracts are retained.
+Documentation for v0.0.3 alpha, based on the [v0.0.3 source](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau). The storage format and existing public return contracts are retained.
 
 > [!NOTE]
 > Methods can yield during storage I/O and backoff retries even if their names do not contain `Async`.
