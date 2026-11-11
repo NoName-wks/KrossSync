@@ -2,7 +2,7 @@
 
 [한국어](Troubleshooting-KO) · [English](Troubleshooting-EN)
 
-Draft documentation for v0.0.3, based on the [v0.0.3 working copy](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau).
+Documentation for v0.0.3 alpha, based on the [v0.0.3 source](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau).
 
 ## Known limits
 
@@ -90,7 +90,7 @@ In v0.0.3, `Remove` and `RemoveData` leave permanent tombstones. Ordinary `Get` 
 
 ## Testing
 
-Place the [regression script](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/Script.legacy.luau) and [multi-server script](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/MultiServerTest.server.luau) beside the module. Keep `RunTests=false` during ordinary operation or exclude the test scripts. Use a separate Experience and StoreName. See [v0.0.3 validation records](Changes-EN#validation-records) for the recorded results and limits. Live-run results are stored under the RunId key in `KrossSync_V003_MULTI_RESULTS`.
+Place the [regression script](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/Script.legacy.luau) and [multi-server script](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/MultiServerTest.server.luau) beside the module. Keep `RunTests=false` during ordinary operation or exclude the test scripts. Use a separate Experience and StoreName. See [v0.0.3 validation records](Changes-EN#validation-records) for the recorded results and limits. Live-run results are stored under the RunId key in `KrossSync_V003_MULTI_RESULTS`.
 
 When reporting an [issue](https://github.com/NoName-wks/KrossSync/issues), include the version, reproduction steps, Output, State, and return values. Do not attach secrets or actual player data.
 

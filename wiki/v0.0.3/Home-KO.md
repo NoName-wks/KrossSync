@@ -10,7 +10,7 @@
 
 [튜토리얼](Tutorial-KO) · [API](API-KO) · [변경점](Changes-KO) · [문제 해결](Troubleshooting-KO)
 
-> v0.0.3용 로컬 준비 문서입니다. 기준 소스는 `source/NEXT VERSION/V0.0.3/KrossSync.luau`이며 알파 작업본입니다.
+> v0.0.3 알파 문서입니다. 기준 소스는 `source/KrossSync.luau`입니다.
 
 KrossSync는 DataStore에 영구 `data`를 저장하고 MemoryStore에 임시 `memory`, 서버 목록, 버전을 포함한 전체 래퍼를 공유하는 서버 전용 모듈입니다. `Set`과 `SetMemory`는 최종 최신 상태를 공유하며 중간 변경은 생략될 수 있습니다.
 
@@ -24,11 +24,11 @@ KrossSync는 DataStore에 영구 `data`를 저장하고 MemoryStore에 임시 `m
 
 ## 시작하기
 
-1. [영어 소스](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau) 또는 [한국어 소스](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KR/KrossSync_KR.luau)를 서버 전용 ModuleScript로 설치합니다.
+1. [영어 소스](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau) 또는 [한국어 소스](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KR/KrossSync_KR.luau)를 서버 전용 ModuleScript로 설치합니다.
 2. [Signal+](https://github.com/AlexanderLindholt/SignalPlus)(v3.x.x)(Made by AlexanderLindholt)를 `signal`변수에 `require()`합니다. 기본 경로는 `ReplicatedStorage.scr.Library.Signal`입니다.
 3. [길드 튜토리얼](Tutorial-KO)에서 생성·가입·공지 공유·해제 흐름을 확인합니다.
 
-기존 `source/KrossSync.luau`는 v0.0.2입니다. 운영 배포에서는 회귀·다중 서버 Script와 `Tests` 폴더를 제외하세요.
+v0.0.2 소스는 [legacy/V0.0.2](https://github.com/NoName-wks/KrossSync/tree/06f3082e0446db8732053c0ba708db5de407eedd/legacy/V0.0.2)에 있습니다. 운영 배포에서는 회귀·다중 서버 Script와 `Tests` 폴더를 제외하세요.
 
 ## 저장 방법 선택
 

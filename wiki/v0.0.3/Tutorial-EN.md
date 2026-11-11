@@ -17,7 +17,7 @@ Install KrossSync on the Roblox server, then load, update, and release guild dat
 - [Before production use](#before-production-use)
 
 > [!CAUTION]
-> This is draft documentation for the v0.0.3 working copy. Validate it in an Experience and StoreName separate from production data.
+> This tutorial is based on the v0.0.3 alpha source. Validate it in an Experience and StoreName separate from production data.
 
 ## Requirements
 
@@ -28,7 +28,7 @@ Install KrossSync on the Roblox server, then load, update, and release guild dat
 
 ## Installation
 
-1. Add [`source/NEXT VERSION/V0.0.3/KrossSync.luau`](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau) or the [Korean source](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KR/KrossSync_KR.luau) as a server-only ModuleScript.
+1. Add [`source/KrossSync.luau`](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau) or the [Korean source](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KR/KrossSync_KR.luau) as a server-only ModuleScript.
 2. Name the ModuleScript `KrossSync`.
 3. `require()` [Signal+](https://github.com/AlexanderLindholt/SignalPlus)(v3.x.x)(Made by AlexanderLindholt) into the `signal` variable. The default path is `ReplicatedStorage.scr.Library.Signal`. Update the module's `require` path if you install it elsewhere.
 4. In Studio, enable **Game Settings → Security → Enable Studio Access to API Services**.

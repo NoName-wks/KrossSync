@@ -17,7 +17,7 @@ KrossSync를 Roblox 서버에 설치하고, 길드 데이터를 열고 저장한
 - [운영 전 체크리스트](#운영-전-체크리스트)
 
 > [!CAUTION]
-> 이 튜토리얼은 v0.0.3 작업본 기준의 준비 문서입니다. 운영 데이터와 분리된 Experience와 StoreName으로 먼저 검증하세요.
+> 이 튜토리얼은 v0.0.3 알파 소스를 기준으로 합니다. 운영 데이터와 분리된 Experience와 StoreName으로 먼저 검증하세요.
 
 ## 요구 사항
 
@@ -28,7 +28,7 @@ KrossSync를 Roblox 서버에 설치하고, 길드 데이터를 열고 저장한
 
 ## 설치
 
-1. [`source/NEXT VERSION/V0.0.3/KrossSync.luau`](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau) 또는 [한국어 주석 버전](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KR/KrossSync_KR.luau)을 서버 전용 `ModuleScript`로 추가합니다.
+1. [`source/KrossSync.luau`](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau) 또는 [한국어 주석 버전](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KR/KrossSync_KR.luau)을 서버 전용 `ModuleScript`로 추가합니다.
 2. ModuleScript 이름을 `KrossSync`로 지정합니다.
 3. [Signal+](https://github.com/AlexanderLindholt/SignalPlus)(v3.x.x)(Made by AlexanderLindholt)를 `signal`변수에 `require()`합니다. 기본 경로는 `ReplicatedStorage.scr.Library.Signal`이며, 다른 위치를 사용한다면 KrossSync 소스의 `require` 경로를 수정합니다.
 4. Studio에서는 **Game Settings → Security → Enable Studio Access to API Services**를 켭니다.

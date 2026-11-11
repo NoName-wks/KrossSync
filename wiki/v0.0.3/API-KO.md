@@ -2,7 +2,7 @@
 
 [한국어](API-KO) · [English](API-EN)
 
-v0.0.3 준비 문서입니다. 기준은 [v0.0.3 작업본](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau)이며 저장 형식과 기존 공개 메서드의 반환 계약을 유지합니다.
+v0.0.3 API 문서입니다. 기준은 [v0.0.3 소스](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau)이며 저장 형식과 기존 공개 메서드의 반환 계약을 유지합니다.
 
 > [!NOTE]
 > 메서드 이름에 `Async`가 없어도 DataStore·MemoryStore I/O와 백오프 재시도 중 yield할 수 있습니다.

@@ -10,7 +10,7 @@
 
 [Tutorial](Tutorial-EN) · [API](API-EN) · [Changes](Changes-EN) · [Troubleshooting](Troubleshooting-EN)
 
-> Local documentation draft for the v0.0.3 alpha working copy at `source/NEXT VERSION/V0.0.3/KrossSync.luau`.
+> Documentation for the v0.0.3 alpha source at `source/KrossSync.luau`.
 
 KrossSync is a server-only module. DataStore holds persistent `data`; MemoryStore shares the full wrapper, including temporary `memory`, server IDs, and version information. `Set` and `SetMemory` share the latest state. Intermediate changes may be skipped.
 
@@ -24,11 +24,11 @@ KrossSync is a server-only module. DataStore holds persistent `data`; MemoryStor
 
 ## Getting started
 
-1. Install either the [English source](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KrossSync.luau) or the [Korean source](https://github.com/NoName-wks/KrossSync/blob/bf2cd0afe1e8e0503def646c7a71f8addb45f9d3/source/NEXT%20VERSION/V0.0.3/KR/KrossSync_KR.luau) as a server-only ModuleScript.
+1. Install either the [English source](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KrossSync.luau) or the [Korean source](https://github.com/NoName-wks/KrossSync/blob/06f3082e0446db8732053c0ba708db5de407eedd/source/KR/KrossSync_KR.luau) as a server-only ModuleScript.
 2. `require()` [Signal+](https://github.com/AlexanderLindholt/SignalPlus)(v3.x.x)(Made by AlexanderLindholt) into the `signal` variable. Its default path is `ReplicatedStorage.scr.Library.Signal`.
 3. Follow the [guild tutorial](Tutorial-EN) to create a guild, add members, share a notice, and release the key.
 
-The existing `source/KrossSync.luau` is v0.0.2. Exclude regression scripts, multi-server test scripts, and the `Tests` folder from production deployment.
+The v0.0.2 source is in [legacy/V0.0.2](https://github.com/NoName-wks/KrossSync/tree/06f3082e0446db8732053c0ba708db5de407eedd/legacy/V0.0.2). Exclude regression scripts, multi-server test scripts, and the `Tests` folder from production deployment.
 
 ## Choosing a write method
 
